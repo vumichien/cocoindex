@@ -1,0 +1,20 @@
+/target
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.venv/
+dist/
+
+.DS_Store
+
+# Lock files for dependencies should be ignored for library
+/Cargo.lock
+
+*.egg-info/

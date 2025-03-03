@@ -1,0 +1,157 @@
+use anyhow::anyhow;
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use log::debug;
+use pyo3::{exceptions::PyException, prelude::*};
+use std::{
+    error::Error,
+    fmt::{Debug, Display},
+    sync::Arc,
+};
+
+#[derive(Debug)]
+pub struct ApiError {
+    pub err: anyhow::Error,
+    pub status_code: StatusCode,
+}
+
+impl ApiError {
+    pub fn new(message: &str, status_code: StatusCode) -> Self {
+        Self {
+            err: anyhow!("{}", message),
+            status_code,
+        }
+    }
+}
+
+impl Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        Display::fmt(&self.err, f)
+    }
+}
+
+impl Error for ApiError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.err.source()
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        debug!("Internal server error:\n{:?}", self.err);
+        (self.status_code, format!("{:#}", self.err)).into_response()
+    }
+}
+
+impl From<anyhow::Error> for ApiError {
+    fn from(err: anyhow::Error) -> ApiError {
+        if err.is::<ApiError>() {
+            return err.downcast::<ApiError>().unwrap();
+        }
+        Self {
+            err,
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+impl Into<PyErr> for ApiError {
+    fn into(self) -> PyErr {
+        PyException::new_err(self.err.to_string())
+    }
+}
+
+#[derive(Clone)]
+pub struct SharedError {
+    pub err: Arc<anyhow::Error>,
+}
+
+impl SharedError {
+    pub fn new(err: anyhow::Error) -> Self {
+        Self { err: Arc::new(err) }
+    }
+}
+impl Debug for SharedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        Debug::fmt(&self.err, f)
+    }
+}
+
+impl Display for SharedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        Display::fmt(&self.err, f)
+    }
+}
+
+impl<E: std::error::Error + Send + Sync + 'static> From<E> for SharedError {
+    fn from(err: E) -> Self {
+        Self {
+            err: Arc::new(anyhow::Error::from(err)),
+        }
+    }
+}
+
+impl AsRef<dyn std::error::Error> for SharedError {
+    fn as_ref(&self) -> &(dyn std::error::Error + 'static) {
+        self.err.as_ref().as_ref()
+    }
+}
+
+impl AsRef<dyn std::error::Error + Send + Sync> for SharedError {
+    fn as_ref(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+        self.err.as_ref().as_ref()
+    }
+}
+
+pub fn shared_ok<T>(value: T) -> Result<T, SharedError> {
+    Ok(value)
+}
+
+pub struct SharedErrorWrapper(SharedError);
+
+impl Display for SharedErrorWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
+impl Debug for SharedErrorWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        Debug::fmt(&self.0, f)
+    }
+}
+
+impl Error for SharedErrorWrapper {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.0.err.as_ref().source()
+    }
+}
+
+pub trait SharedResultExt<T> {
+    fn std_result(self) -> Result<T, SharedErrorWrapper>;
+}
+
+impl<T> SharedResultExt<T> for Result<T, SharedError> {
+    fn std_result(self) -> Result<T, SharedErrorWrapper> {
+        match self {
+            Ok(value) => Ok(value),
+            Err(err) => Err(SharedErrorWrapper(err)),
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! api_bail {
+    ( $fmt:literal $(, $($arg:expr) , *)?) => {
+        return Err($crate::service::error::ApiError::new(&format!($fmt $(, $($arg) , *)?), axum::http::StatusCode::BAD_REQUEST).into())
+    };
+}
+
+#[macro_export]
+macro_rules! api_error {
+    ( $fmt:literal $(, $($arg:expr) , *)?) => {
+        $crate::service::error::ApiError::new(&format!($fmt $(, $($arg) , *)?), axum::http::StatusCode::BAD_REQUEST)
+    };
+}

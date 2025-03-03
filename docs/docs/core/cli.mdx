@@ -1,0 +1,74 @@
+---
+title: CLI
+description: CocoIndex CLI
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# CocoIndex CLI
+
+CocoIndex CLI embeds CLI functionality in your program.
+It provides a bunch of commands for easily managing and inspecting your flows and indexes.
+
+## Enable CocoIndex CLI
+
+### Use Packaged Main
+
+The easiest way is to use a packaged main function:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python title="main.py"
+import cocoindex
+
+@cocoindex.main_fn()
+def main():
+  ...
+```
+
+</TabItem>
+</Tabs>
+
+With this, when the program is executed with `cocoindex` as its first argument, CocoIndex CLI will take over the control. For example:
+
+```sh
+$ python main.py cocoindex ls       # Run "ls" subcommand: list all flows
+```
+
+You may also provide a `cocoindex_cmd` argument to the `main_fn` decorator to change the command from `cocoindex` to something else.
+
+### Explicitly CLI Invoke
+
+An alterntive way is to use `cocoindex.cli.cli` (with type [`click.Group`](https://click.palletsprojects.com/en/stable/api/#click.Group)).
+For example, you may invoke the CLI explicitly with additional arguments:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.cli.cli.main(args)
+```
+
+</TabItem>
+</Tabs>
+
+## Subcommands
+
+The following subcommands are available:
+
+| Subcommand | Description |
+| ---------- | ----------- |
+| `ls` | List all flows. |
+| `server` | Start a HTTP server providing REST APIs. It will allow tools like CocoInsight to access the server. |
+| `setup` | Check and apply setup changes for flows, including the internal and target storage (to export). |
+| `show` | Show the spec for a specific flow. |
+| `update` | Update the index defined by the flow. |
+
+Use `--help` to see the full list of subcommands, and `subcommand --help` to see the usage of a specific one.
+
+```sh
+python main.py cocoindex --help       # Show all subcommands
+python main.py cocoindex show --help  # Show usage of "show" subcommand
+```

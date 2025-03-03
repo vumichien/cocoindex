@@ -1,0 +1,75 @@
+---
+title: Initialization
+description: Initialize the CocoIndex library
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Initialize the CocoIndex Library
+
+Before everything starts, the `cocoindex` library needs to be initialized with settings.
+There're two options to do this:
+
+*   Using packaged main function. It's easier to start with.
+*   Explicit initialization. It's more flexible.
+
+## Using Packaged Main
+
+The easiest way is to use a packaged main function:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+The `@cocoindex.main_fn` decorator wraps your main function for CocoIndex:
+
+```python
+import cocoindex
+
+@cocoindex.main_fn()
+def main():
+  ...
+
+if __name__ == "__main__":
+  main()
+```
+
+</TabItem>
+</Tabs>
+
+This takes care of the following effects:
+
+1.  Initialize the library with settings loaded from environment variables, if not explicitly provided.
+2.  If the program is executed with the `cocoindex` command, CocoIndex CLI will take over the control.
+    It provides a bunch of commands for easily managing and inspecting indexes.
+    See [CocoIndex CLI](/docs/core/cli) for more details.
+3.  Otherwise, it will run the main function.
+
+### Environment Variables
+
+The following environment variables are supported:
+
+*   `COCOINDEX_DATABASE_URL`: The URL of the Postgres database to use as the internal storage, e.g. `postgres://cocoindex:cocoindex@localhost/cocoindex`
+
+## Explicit Initialization
+
+Alternatively, for flexibility, you can also explicitly initialize the library by the `init()` function:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+import cocoindex
+
+def main():
+  ...
+  cocoindex.init(cocoindex.Settings(database_url="postgres://cocoindex:cocoindex@localhost/cocoindex"))
+  ...
+
+...
+if __name__ == "__main__":
+  main()
+```
+
+</TabItem>
+</Tabs>

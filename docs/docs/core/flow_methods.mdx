@@ -1,0 +1,27 @@
+---
+title: Flow Methods
+description: Methods of a CocoIndex Flow
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Methods of a CocoIndex Flow
+
+After a flow is defined as discussed in [Flow Definition](/docs/core/flow_def), you get a Flow object and can call its methods to operate with it.
+
+## update
+
+The `update()` method will update will update the index defined by the flow.
+
+Once the function returns, the indice is fresh up to the moment when the function is called.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+flow.update()
+```
+
+</TabItem>
+</Tabs>

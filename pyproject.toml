@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.7.8,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "cocoindex"
+dynamic = ["version"]
+description = "With CocoIndex, users declare the transformation, CocoIndex creates & maintains an index, and keeps the derived index up to date based on source update, with minimal computation and changes."
+authors = [{ name = "CocoIndex", email = "cocoindex.io@gmail.com" }]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["sentence-transformers>=3.3.1", "click>=8.1.8"]
+license = "Apache-2.0"
+urls = { Homepage = "https://cocoindex.io/" }
+
+[tool.maturin]
+bindings = "pyo3"
+python-source = "python"
+module-name = "cocoindex._engine"
+features = ["pyo3/extension-module"]

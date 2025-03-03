@@ -1,0 +1,81 @@
+---
+title: Custom Functions
+description: Build Custom Functions
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Build Custom Functions
+
+To build a custom function, you need to define a function spec and an executor.
+
+## Function Spec
+
+The function spec of a function defines the function's parameters.
+These parameters configures behavior of a specific instance of the function.
+When you use this function in a flow (typically by a [`transform()`](/docs/core/flow_def#transform)), you instantiate this function spec, with specific parameter values.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+A function spec is defined as a class that inherits from `cocoindex.op.FunctionSpec`.
+
+```python
+
+class DemoFunctionSpec(cocoindex.op.FunctionSpec):
+    """
+    Documentation for the function.
+    """
+    param1: str
+    param2: int | None = None
+    ...
+```
+
+Notes:
+*   All fields of the spec must have a type serializable / deserializable by the `json` module.
+*   All subclasses of `FunctionSpec` can be instantiated similar to a dataclass, i.e. `ClassName(param1=value1, param2=value2, ...)`.
+
+</TabItem>
+</Tabs>
+
+
+## Function Executor
+
+A function executor defines behavior of a function. It's initantiated for each operation that uses this function.
+
+The function executor is responsible for:
+
+*   *Prepare* for the function execution, based on the spec. It happens once and only once before execution. e.g. if the function calls a machine learning model, the model name can be a parameter as a field of the spec, and we may load the model in this phase.
+*   *Run* the function, for each specific input arguments. This happens multiple times, for each specific rows of data.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+A function executor is defined as a class annotated by `@cocoindex.op.executor_class()`.
+
+
+```python
+@cocoindex.op.executor_class()
+class DemoFunctionExecutor:
+    spec: DemoFunctionSpec
+    ...
+
+    def prepare(self) -> None:
+        ...
+
+    def __call__(self, input_value: str) -> str:
+        ...
+```
+
+Notes:
+
+*   The `cocoindex.op.executor_class()` class also takes the following input:
+    *   `gpu: bool`: Whether the executor will use GPU. It will affect the way the function is scheduled.
+*   A `spec` field must be present in the class, and must be annoated with the spec class name.
+*   The `prepare()` method is optional. It's executed once and only once before any `__call__` execution, to prepare the function execution.
+*   The `__call__()` method is required. It's executed for each specific rows of data.
+    Types of arugments and the return value must be annotated, so that CocoIndex will have information about data types of the operation's output fields. See [Data Types](/docs/core/data_types) for supported types.
+
+</TabItem>
+</Tabs>
