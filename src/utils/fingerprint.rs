@@ -1,3 +1,4 @@
+use anyhow::bail;
 use base64::prelude::*;
 use blake2::digest::typenum;
 use blake2::{Blake2b, Digest};
@@ -5,39 +6,7 @@ use serde::ser::{
     Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
     SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
-
-#[derive(Clone, Default)]
-pub struct Fingerprinter {
-    hasher: Blake2b<typenum::U16>,
-}
-
-impl Fingerprinter {
-    pub fn to_bytes(self) -> Vec<u8> {
-        self.hasher.finalize().to_vec()
-    }
-
-    pub fn to_base64(self) -> String {
-        BASE64_STANDARD.encode(self.to_bytes())
-    }
-
-    fn write_type_tag(&mut self, tag: &str) {
-        self.hasher.update(tag.as_bytes());
-        self.hasher.update(b";");
-    }
-
-    fn write_end_tag(&mut self) {
-        self.hasher.update(b".");
-    }
-
-    fn write_varlen_bytes(&mut self, bytes: &[u8]) {
-        self.write_usize(bytes.len());
-        self.hasher.update(bytes);
-    }
-
-    fn write_usize(&mut self, value: usize) {
-        self.hasher.update((value as u32).to_le_bytes());
-    }
-}
+use serde::Deserialize;
 
 #[derive(Debug)]
 pub struct FingerprinterError {
@@ -58,6 +27,80 @@ impl serde::ser::Error for FingerprinterError {
         FingerprinterError {
             msg: format!("{msg}"),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Fingerprint([u8; 16]);
+
+impl Fingerprint {
+    pub fn to_base64(&self) -> String {
+        BASE64_STANDARD.encode(self.0)
+    }
+
+    pub fn from_base64(s: &str) -> anyhow::Result<Self> {
+        let bytes = BASE64_STANDARD.decode(s)?;
+        match bytes.try_into() {
+            Ok(bytes) => Ok(Fingerprint(bytes)),
+            Err(_) => bail!("Fingerprint base64 length is unexpected"),
+        }
+    }
+}
+
+impl Serialize for Fingerprint {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_base64())
+    }
+}
+
+impl<'de> Deserialize<'de> for Fingerprint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Self::from_base64(&s).map_err(serde::de::Error::custom)
+    }
+}
+#[derive(Clone, Default)]
+pub struct Fingerprinter {
+    hasher: Blake2b<typenum::U16>,
+}
+
+impl Fingerprinter {
+    pub fn to_fingerprint(self) -> Fingerprint {
+        Fingerprint(self.hasher.finalize().into())
+    }
+
+    pub fn with<S: Serialize>(self, value: &S) -> Result<Self, FingerprinterError> {
+        let mut fingerprinter = self;
+        value.serialize(&mut fingerprinter)?;
+        Ok(fingerprinter)
+    }
+
+    pub fn write<S: Serialize>(&mut self, value: &S) -> Result<(), FingerprinterError> {
+        Ok(value.serialize(self)?)
+    }
+
+    fn write_type_tag(&mut self, tag: &str) {
+        self.hasher.update(tag.as_bytes());
+        self.hasher.update(b";");
+    }
+
+    fn write_end_tag(&mut self) {
+        self.hasher.update(b".");
+    }
+
+    fn write_varlen_bytes(&mut self, bytes: &[u8]) {
+        self.write_usize(bytes.len());
+        self.hasher.update(bytes);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.hasher.update((value as u32).to_le_bytes());
     }
 }
 

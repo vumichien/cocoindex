@@ -1,42 +1,25 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-
-use base64::prelude::*;
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{Arc, Mutex},
 };
 
-use crate::base::{schema, value};
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CacheKey(Vec<u8>);
-
-impl Serialize for CacheKey {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&BASE64_STANDARD.encode(&self.0))
-    }
-}
-
-impl<'de> Deserialize<'de> for CacheKey {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let bytes = BASE64_STANDARD
-            .decode(s)
-            .map_err(serde::de::Error::custom)?;
-        Ok(CacheKey(bytes))
-    }
-}
+use crate::{
+    base::{schema, value},
+    service::error::{SharedError, SharedResultExt},
+    utils::fingerprint::Fingerprint,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheEntry {
+    time_sec: i64,
+    value: serde_json::Value,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoizationInfo {
-    pub cache: HashMap<CacheKey, serde_json::Value>,
+    pub cache: HashMap<Fingerprint, CacheEntry>,
 }
 
 impl Default for MemoizationInfo {
@@ -47,66 +30,132 @@ impl Default for MemoizationInfo {
     }
 }
 
-enum EvaluationCacheEntry {
+struct EvaluationCacheEntry {
+    time: chrono::DateTime<chrono::Utc>,
+    data: EvaluationCacheData,
+}
+
+enum EvaluationCacheData {
     /// Existing entry in previous runs, but not in current run yet.
     Previous(serde_json::Value),
     /// Value appeared in current run.
-    Current(Arc<async_lock::OnceCell<value::Value>>),
+    Current(Arc<async_lock::OnceCell<Result<value::Value, SharedError>>>),
 }
 
-#[derive(Default)]
 pub struct EvaluationCache {
-    cache: Mutex<HashMap<CacheKey, EvaluationCacheEntry>>,
+    current_time: chrono::DateTime<chrono::Utc>,
+    cache: Mutex<HashMap<Fingerprint, EvaluationCacheEntry>>,
 }
 
 impl EvaluationCache {
-    pub fn from_stored(cache: HashMap<CacheKey, serde_json::Value>) -> Self {
+    pub fn new(
+        current_time: chrono::DateTime<chrono::Utc>,
+        existing_cache: Option<HashMap<Fingerprint, CacheEntry>>,
+    ) -> Self {
         Self {
+            current_time,
             cache: Mutex::new(
-                cache
+                existing_cache
                     .into_iter()
-                    .map(|(k, v)| (k, EvaluationCacheEntry::Previous(v)))
+                    .map(|e| e.into_iter())
+                    .flatten()
+                    .map(|(k, e)| {
+                        (
+                            k,
+                            EvaluationCacheEntry {
+                                time: chrono::DateTime::from_timestamp(e.time_sec, 0)
+                                    .unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC),
+                                data: EvaluationCacheData::Previous(e.value),
+                            },
+                        )
+                    })
                     .collect(),
             ),
         }
     }
 
-    pub fn into_stored(self) -> Result<HashMap<CacheKey, serde_json::Value>> {
+    pub fn into_stored(self) -> Result<HashMap<Fingerprint, CacheEntry>> {
         Ok(self
             .cache
             .into_inner()?
             .into_iter()
-            .filter_map(|(k, v)| match v {
-                EvaluationCacheEntry::Previous(_) => None,
-                EvaluationCacheEntry::Current(entry) => {
-                    entry.get().map(|v| Ok((k, serde_json::to_value(v)?)))
-                }
+            .filter_map(|(k, e)| match e.data {
+                EvaluationCacheData::Previous(_) => None,
+                EvaluationCacheData::Current(entry) => match entry.get() {
+                    Some(Ok(v)) => Some(serde_json::to_value(v).map(|value| {
+                        (
+                            k,
+                            CacheEntry {
+                                time_sec: e.time.timestamp(),
+                                value,
+                            },
+                        )
+                    })),
+                    _ => None,
+                },
             })
-            .collect::<Result<_>>()?)
+            .collect::<Result<_, _>>()?)
     }
 
     pub fn get(
         &self,
-        key: CacheKey,
+        key: Fingerprint,
         typ: &schema::ValueType,
-    ) -> Result<Arc<async_lock::OnceCell<value::Value>>> {
+        ttl: Option<chrono::Duration>,
+    ) -> Result<Arc<async_lock::OnceCell<Result<value::Value, SharedError>>>> {
         let mut cache = self.cache.lock().unwrap();
-        let result = match cache.entry(key) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => match &mut entry.get_mut() {
-                EvaluationCacheEntry::Previous(value) => {
-                    let value = value::Value::from_json(std::mem::take(value), typ)?;
-                    let cell = Arc::new(async_lock::OnceCell::from(value));
-                    entry.insert(EvaluationCacheEntry::Current(cell.clone()));
+        let result = {
+            match cache.entry(key) {
+                std::collections::hash_map::Entry::Occupied(mut entry)
+                    if !ttl
+                        .map(|ttl| entry.get().time + ttl < self.current_time)
+                        .unwrap_or(false) =>
+                {
+                    let entry_mut = &mut entry.get_mut();
+                    match &mut entry_mut.data {
+                        EvaluationCacheData::Previous(value) => {
+                            let value = value::Value::from_json(std::mem::take(value), typ)?;
+                            let cell = Arc::new(async_lock::OnceCell::from(Ok(value)));
+                            let time = entry_mut.time;
+                            entry.insert(EvaluationCacheEntry {
+                                time,
+                                data: EvaluationCacheData::Current(cell.clone()),
+                            });
+                            cell
+                        }
+                        EvaluationCacheData::Current(cell) => cell.clone(),
+                    }
+                }
+                entry => {
+                    let cell = Arc::new(async_lock::OnceCell::new());
+                    entry.insert_entry(EvaluationCacheEntry {
+                        time: self.current_time,
+                        data: EvaluationCacheData::Current(cell.clone()),
+                    });
                     cell
                 }
-                EvaluationCacheEntry::Current(cell) => cell.clone(),
-            },
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let cell = Arc::new(async_lock::OnceCell::new());
-                entry.insert(EvaluationCacheEntry::Current(cell.clone()));
-                cell
             }
         };
         Ok(result)
+    }
+
+    pub async fn evaluate<Fut>(
+        &self,
+        key: Fingerprint,
+        typ: &schema::ValueType,
+        ttl: Option<chrono::Duration>,
+        compute: impl FnOnce() -> Fut,
+    ) -> Result<value::Value>
+    where
+        Fut: Future<Output = Result<value::Value>>,
+    {
+        let cell = self.get(key, typ, ttl)?;
+        let result = cell
+            .get_or_init(|| {
+                let fut = compute();
+                async move { fut.await.map_err(SharedError::new) }
+            })
+            .await;
+        Ok(result.clone().std_result()?)
     }
 }

@@ -6,9 +6,8 @@ use log::error;
 use serde::Serialize;
 use sqlx::PgPool;
 
-use super::db_tracking::{self, read_source_tracking_info};
+use super::db_tracking::{self, read_source_tracking_info, TrackedTargetKey};
 use super::db_tracking_setup;
-use super::fingerprint::Fingerprinter;
 use super::memoization::{EvaluationCache, MemoizationInfo};
 use crate::base::schema;
 use crate::base::spec::FlowInstanceSpec;
@@ -16,8 +15,7 @@ use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
 use crate::ops::interface::{ExportTargetMutation, ExportTargetUpsertEntry};
 use crate::utils::db::WriteAction;
-
-use self::db_tracking::{TrackedTargetKey, ValueFingerprint};
+use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 
 use super::evaluator::{evaluate_source_entry, ScopeValueBuilder};
 
@@ -96,8 +94,8 @@ struct TrackingInfoForTarget<'a> {
     // Existing keys info. Keyed by target key.
     // Will be removed after new rows for the same key are added into `new_staging_keys_info` and `mutation.upserts`,
     // hence all remaining ones are to be deleted.
-    existing_staging_keys_info: HashMap<serde_json::Value, Vec<(i64, Option<ValueFingerprint>)>>,
-    existing_keys_info: HashMap<serde_json::Value, Vec<(i64, Option<ValueFingerprint>)>>,
+    existing_staging_keys_info: HashMap<serde_json::Value, Vec<(i64, Option<Fingerprint>)>>,
+    existing_keys_info: HashMap<serde_json::Value, Vec<(i64, Option<Fingerprint>)>>,
 
     // New keys info for staging.
     new_staging_keys_info: Vec<TrackedTargetKey>,
@@ -215,9 +213,11 @@ async fn precommit_source_tracking_info(
                         .fields
                         .push(value.fields[*field as usize].clone());
                 }
-                let mut fingerprinter = Fingerprinter::default();
-                field_values.serialize(&mut fingerprinter)?;
-                let curr_fp = Some(fingerprinter.to_base64());
+                let curr_fp = Some(
+                    Fingerprinter::default()
+                        .with(&field_values)?
+                        .to_fingerprint(),
+                );
 
                 let existing_target_keys = target_info.existing_keys_info.remove(&primary_key_json);
                 let existing_staging_target_keys = target_info
@@ -439,9 +439,8 @@ pub async fn update_source_entry<'a>(
         .map(|info| info.memoization_info.map(|info| info.0))
         .flatten()
         .flatten();
-    let evaluation_cache = memoization_info
-        .map(|info| EvaluationCache::from_stored(info.cache))
-        .unwrap_or_default();
+    let evaluation_cache =
+        EvaluationCache::new(process_timestamp, memoization_info.map(|info| info.cache));
     let value_builder =
         evaluate_source_entry(plan, source_op_idx, schema, key, Some(&evaluation_cache)).await?;
 
