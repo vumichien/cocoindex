@@ -1,7 +1,7 @@
 Simple example for cocoindex: build embedding index based on local files.
 
 ## Prerequisite
-Follow [Setup Postgres](../../#setup-postgres) section on the root directory to setup Postgres database.
+[Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
 
 ## Run
 
