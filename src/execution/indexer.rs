@@ -73,7 +73,7 @@ impl std::fmt::Display for IndexUpdateInfo {
     }
 }
 
-fn make_primary_key(
+pub fn extract_primary_key(
     primary_key_def: &AnalyzedPrimaryKeyDef,
     record: &FieldValues,
 ) -> Result<KeyValue> {
@@ -215,7 +215,7 @@ async fn precommit_source_tracking_info(
                 .or_default();
             let mut keys_info = Vec::new();
             for value in collected_values.iter() {
-                let primary_key = make_primary_key(&export_op.primary_key_def, value)?;
+                let primary_key = extract_primary_key(&export_op.primary_key_def, value)?;
                 let primary_key_json = serde_json::to_value(&primary_key)?;
 
                 let mut field_values = FieldValues {
@@ -417,30 +417,41 @@ async fn commit_source_tracking_info(
     Ok(WithApplyStatus::Normal(()))
 }
 
+pub enum EvaluationCacheOption<'a> {
+    NoCache,
+    UseCache(&'a PgPool),
+}
+
 pub async fn evaluate_source_entry_with_cache(
     plan: &ExecutionPlan,
     source_op: &AnalyzedSourceOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
-    pool: &PgPool,
-) -> Result<Option<value::ScopeValue>> {
-    let source_key_json = serde_json::to_value(key)?;
-    let existing_tracking_info = read_source_tracking_info(
-        source_op.source_id,
-        &source_key_json,
-        &plan.tracking_table_setup,
-        pool,
-    )
-    .await?;
-    let process_timestamp = chrono::Utc::now();
-    let memoization_info = existing_tracking_info
-        .and_then(|info| info.memoization_info.map(|info| info.0))
-        .flatten();
-    let evaluation_cache =
-        EvaluationCache::new(process_timestamp, memoization_info.map(|info| info.cache));
-    let data_builder =
-        evaluate_source_entry(plan, source_op, schema, key, Some(&evaluation_cache)).await?;
-    Ok(data_builder.map(|builder| builder.into()))
+    cache_option: EvaluationCacheOption<'_>,
+) -> Result<Option<ScopeValueBuilder>> {
+    let cache = match cache_option {
+        EvaluationCacheOption::NoCache => None,
+        EvaluationCacheOption::UseCache(pool) => {
+            let source_key_json = serde_json::to_value(key)?;
+            let existing_tracking_info = read_source_tracking_info(
+                source_op.source_id,
+                &source_key_json,
+                &plan.tracking_table_setup,
+                pool,
+            )
+            .await?;
+            let process_timestamp = chrono::Utc::now();
+            let memoization_info = existing_tracking_info
+                .and_then(|info| info.memoization_info.map(|info| info.0))
+                .flatten();
+            Some(EvaluationCache::new(
+                process_timestamp,
+                memoization_info.map(|info| info.cache),
+            ))
+        }
+    };
+    let data_builder = evaluate_source_entry(plan, source_op, schema, key, cache.as_ref()).await?;
+    Ok(data_builder)
 }
 
 pub async fn update_source_entry(
