@@ -164,4 +164,15 @@ if (!!process.env.COCOINDEX_DOCS_POSTHOG_API_KEY) {
   ]);
 }
 
+
+if (!!process.env.COCOINDEX_DOCS_ALGOLIA_API_KEY && !!process.env.COCOINDEX_DOCS_ALGOLIA_APP_ID) {
+  config.themeConfig.algolia = {
+    appId: process.env.COCOINDEX_DOCS_ALGOLIA_APP_ID,
+    apiKey: process.env.COCOINDEX_DOCS_ALGOLIA_API_KEY,
+    indexName: 'cocoindex',
+    contextualSearch: true,
+    searchPagePath: 'search',
+  };
+}
+
 export default config;
