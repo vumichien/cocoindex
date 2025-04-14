@@ -4,11 +4,20 @@ from dataclasses import dataclass
 from . import op
 from . import index
 from .auth_registry import AuthEntryReference
+
 class Postgres(op.StorageSpec):
     """Storage powered by Postgres and pgvector."""
 
     database_url: str | None = None
     table_name: str | None = None
+
+@dataclass
+class Qdrant(op.StorageSpec):
+    """Storage powered by Qdrant - https://qdrant.tech/."""
+
+    collection_name: str
+    grpc_url: str = "http://localhost:6334/"
+    api_key: str | None = None
 
 @dataclass
 class Neo4jConnectionSpec:
