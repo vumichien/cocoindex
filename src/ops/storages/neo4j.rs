@@ -283,9 +283,7 @@ fn mapped_field_values_to_bolt<'a>(
 
 fn basic_value_to_bolt(value: &BasicValue, schema: &BasicValueType) -> Result<BoltType> {
     let bolt_value = match value {
-        BasicValue::Bytes(v) => {
-            BoltType::Bytes(neo4rs::BoltBytes::new(bytes::Bytes::from_owner(v.clone())))
-        }
+        BasicValue::Bytes(v) => BoltType::Bytes(neo4rs::BoltBytes::new(v.clone())),
         BasicValue::Str(v) => BoltType::String(neo4rs::BoltString::new(v)),
         BasicValue::Bool(v) => BoltType::Boolean(neo4rs::BoltBoolean::new(*v)),
         BasicValue::Int64(v) => BoltType::Integer(neo4rs::BoltInteger::new(*v)),
