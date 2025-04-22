@@ -1,6 +1,9 @@
 Simple example for cocoindex: build embedding index based on local files.
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1e2KgjVUQp8u-0Va28C3WjfVnSjrjobQA?usp=sharing)
+
 ## Prerequisite
+
 [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
 
 ## Run
@@ -29,7 +32,8 @@ Run:
 python main.py
 ```
 
-## CocoInsight 
+## CocoInsight
+
 CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
 
 Run CocoInsight to understand your RAG data pipeline:
@@ -39,3 +43,4 @@ python main.py cocoindex server -c https://cocoindex.io
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
+
