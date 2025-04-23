@@ -277,7 +277,7 @@ impl<K, S, C: ResourceSetupStatusCheck> std::fmt::Display for ResourceSetupInfo<
         };
         let status_str = format!("[ {:^9} ]", status_code);
         let status_full = status_str.color(AnsiColors::Cyan);
-        let desc_colored = self.description.color(AnsiColors::BrightWhite);
+        let desc_colored = &self.description;
         writeln!(f, "{} {}", status_full, desc_colored)?;
         if let Some(status_check) = &self.status_check {
             let changes = status_check.describe_changes();
@@ -393,7 +393,7 @@ impl std::fmt::Display for FormattedFlowSetupStatusCheck<'_> {
             f,
             "{} {}\n",
             ObjectSetupStatusCode(flow_ssc).to_string().color(AnsiColors::Cyan),
-            format!("Flow: {}", self.0).color(AnsiColors::White)
+            format!("Flow: {}", self.0)
         )?;
 
         let mut f = indented(f).with_str(INDENT);
