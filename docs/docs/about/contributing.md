@@ -23,11 +23,20 @@ We tag issues with the ["good first issue"](https://github.com/cocoindex-io/coco
 ## Start hacking! Setting Up Development Environment 
 Following the steps below to get cocoindex build on latest codebase locally - if you are making changes to cocoindex funcionality and want to test it out.
 
--   Install Rust toolchain: [docs](https://rust-lang.org/tools/install)
-
--   (Optional) Setup Python virtual environment:
+-   🦀 [Install Rust](https://rust-lang.org/tools/install)
+    
+    If you don't have Rust installed, run
     ```bash
-    virtualenv --python=$(which python3.12) .venv
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+    Already have Rust? Make sure it's up to date 
+    ```bash 
+    rustup update
+    ```
+
+-   (Recommended) Setup Python virtual environment:
+    ```bash
+    python3 -m venv .venv
     ```
     Activate the virtual environment, before any installings / buildings / runnings:
 
