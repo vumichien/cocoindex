@@ -7,7 +7,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-    rust:
+    build-test:
         strategy:
             matrix:
                 python-version: [3.11, 3.13]
@@ -18,7 +18,9 @@ jobs:
 
         - run: rustup toolchain install stable --profile minimal
         - name: Rust Cache
-          uses: Swatinem/rust-cache@v2.7.3
+          uses: Swatinem/rust-cache@v2
+          with:
+            key: ${{ runner.os }}-rust-${{ matrix.python-version }}
         - name: Rust build
           run: cargo build --verbose
         - name: Rust tests
