@@ -1,6 +1,7 @@
 import asyncio
 import click
 import datetime
+from rich.console import Console
 
 from . import flow, lib
 from .setup import sync_setup, drop_setup, flow_names_with_setup, apply_setup_changes
@@ -52,11 +53,14 @@ def ls(show_all: bool):
 
 @cli.command()
 @click.argument("flow_name", type=str, required=False)
-def show(flow_name: str | None):
+@click.option("--color/--no-color", default=True)
+def show(flow_name: str | None, color: bool):
     """
-    Show the flow spec.
+    Show the flow spec in a readable format with colored output.
     """
-    click.echo(str(_flow_by_name(flow_name)))
+    flow = _flow_by_name(flow_name)
+    console = Console(no_color=not color)
+    console.print(flow._render_text())
 
 @cli.command()
 def setup():
