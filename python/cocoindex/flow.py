@@ -15,7 +15,7 @@ from threading import Lock
 from enum import Enum
 from dataclasses import dataclass
 from rich.text import Text
-from rich.console import Console
+from rich.tree import Tree
 
 from . import _engine
 from . import index
@@ -462,61 +462,33 @@ class Flow:
             return engine_flow
         self._lazy_engine_flow = _lazy_engine_flow
 
-    def _format_flow(self, flow_dict: dict) -> Text:
-        output = Text()
+    def _render_spec(self, verbose: bool = False) -> Tree:
+        """
+        Render the flow spec as a styled rich Tree with hierarchical structure.
+        """
+        spec = self._get_spec(verbose=verbose)
+        tree = Tree(f"Flow: {self.name}", style="cyan")
 
-        def add_line(content, indent=0, style=None, end="\n"):
-            output.append(" " * indent)
-            output.append(content, style=style)
-            output.append(end)
+        def build_tree(label: str, lines: list):
+            node = Tree(label, style="bold magenta" if lines else "cyan")
+            for line in lines:
+                child_node = node.add(Text(line.content, style="yellow"))
+                child_node.children = build_tree("", line.children).children
+            return node
 
-        def format_key_value(key, value, indent):
-            if isinstance(value, (dict, list)):
-                add_line(f"- {key}:", indent, style="green")
-                format_data(value, indent + 2)
-            else:
-                add_line(f"- {key}:", indent, style="green", end="")
-                add_line(f" {value}", style="yellow")
+        for section, lines in spec.sections:
+            section_node = build_tree(f"{section}:", lines)
+            tree.children.append(section_node)
+        return tree
 
-        def format_data(data, indent=0):
-            if isinstance(data, dict):
-                for key, value in data.items():
-                    format_key_value(key, value, indent)
-            elif isinstance(data, list):
-                for i, item in enumerate(data):
-                    format_key_value(f"[{i}]", item, indent)
-            else:
-                add_line(str(data), indent, style="yellow")
-
-        # Header
-        flow_name = flow_dict.get("name", "Unnamed")
-        add_line(f"Flow: {flow_name}", style="bold cyan")
-
-        # Section
-        for section_title, section_key in [
-            ("Sources:", "import_ops"),
-            ("Processing:", "reactive_ops"),
-            ("Targets:", "export_ops"),
-        ]:
-            add_line("")
-            add_line(section_title, style="bold cyan")
-            format_data(flow_dict.get(section_key, []), indent=0)
-
-        return output
-
-    def _render_text(self) -> Text:
-        flow_spec_str = str(self._lazy_engine_flow())
-        try:
-            flow_dict = json.loads(flow_spec_str)
-            return self._format_flow(flow_dict)
-        except json.JSONDecodeError:
-            return Text(flow_spec_str)
+    def _get_spec(self, verbose: bool = False) -> list[tuple[str, str, int]]:
+        return self._lazy_engine_flow().get_spec(output_mode="verbose" if verbose else "concise")
     
-    def _render_schema(self) -> list[tuple[str, str, str]]:
+    def _get_schema(self) -> list[tuple[str, str, str]]:
         return self._lazy_engine_flow().get_schema()
 
     def __str__(self):
-        return str(self._render_text())
+        return str(self._get_spec())
 
     def __repr__(self):
         return repr(self._lazy_engine_flow())
