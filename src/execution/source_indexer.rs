@@ -6,6 +6,7 @@ use tokio::{sync::Semaphore, task::JoinSet};
 
 use super::{
     db_tracking,
+    evaluator::SourceRowEvaluationContext,
     row_indexer::{self, SkippedOr, SourceVersion, SourceVersionKind},
     stats,
 };
@@ -111,14 +112,17 @@ impl SourceIndexingContext {
                         },
                     )
                     .await?
-                    .value
+                    .map(|v| v.value)
+                    .flatten()
             };
             let schema = &self.flow.data_schema;
             let result = row_indexer::update_source_row(
-                &plan,
-                import_op,
-                schema,
-                &key,
+                &SourceRowEvaluationContext {
+                    plan: &plan,
+                    import_op,
+                    schema,
+                    key: &key,
+                },
                 source_value,
                 &source_version,
                 &pool,
