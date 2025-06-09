@@ -504,9 +504,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
                 .map(|item| -> anyhow::Result<_> {
                     Ok(TypedResourceSetupChangeItem {
                         key: serde_json::from_value(item.key.clone())?,
-                        setup_status: item
-                            .setup_status
-                            .as_any()
+                        setup_status: (item.setup_status as &dyn Any)
                             .downcast_ref::<T::SetupStatus>()
                             .ok_or_else(invariance_violation)?,
                     })

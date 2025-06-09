@@ -142,9 +142,7 @@ impl setup::ResourceSetupStatus for SetupStatus {
         }
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+
 }
 
 impl SetupStatus {
