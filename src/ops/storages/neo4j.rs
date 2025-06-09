@@ -854,9 +854,7 @@ impl ResourceSetupStatus for GraphElementDataSetupStatus {
         self.change_type
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+
 }
 
 async fn clear_graph_element_data(

@@ -195,9 +195,7 @@ impl setup::ResourceSetupStatus for GraphElementDataSetupStatus {
         self.actions.change_type(false)
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+
 }
 
 fn append_drop_table(

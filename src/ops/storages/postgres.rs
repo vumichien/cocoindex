@@ -526,9 +526,7 @@ impl setup::ResourceSetupStatus for SetupStatus {
         self.actions.table_action.change_type(has_other_update)
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+
 }
 
 impl SetupStatus {
