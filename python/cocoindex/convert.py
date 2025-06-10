@@ -237,7 +237,12 @@ def dump_engine_object(v: Any) -> Any:
         nanos = int((total_secs - secs) * 1e9)
         return {"secs": secs, "nanos": nanos}
     elif hasattr(v, "__dict__"):
-        s = {k: dump_engine_object(v) for k, v in v.__dict__.items()}
+        s = {}
+        for k, val in v.__dict__.items():
+            if val is None:
+                # Skip None values
+                continue
+            s[k] = dump_engine_object(val)
         if hasattr(v, "kind") and "kind" not in s:
             s["kind"] = v.kind
         return s
