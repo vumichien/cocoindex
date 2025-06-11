@@ -259,7 +259,8 @@ impl FlowBuilder {
     pub fn new(name: &str) -> PyResult<Self> {
         let lib_context = get_lib_context().into_py_result()?;
         let existing_flow_ss = lib_context
-            .all_setup_states
+            .require_all_setup_states()
+            .into_py_result()?
             .read()
             .unwrap()
             .flows
