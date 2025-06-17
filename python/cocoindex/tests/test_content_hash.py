@@ -35,10 +35,10 @@ class TestContentHashFunctionality:
             # Create test files
             file1_path = Path(temp_dir) / "test1.txt"
             file2_path = Path(temp_dir) / "test2.txt"
-            
+
             file1_content = "This is the content of file 1"
             file2_content = "This is the content of file 2"
-            
+
             file1_path.write_text(file1_content)
             file2_path.write_text(file2_content)
 
@@ -46,7 +46,7 @@ class TestContentHashFunctionality:
             with patch.dict(os.environ, {}, clear=False):
                 for env_var in [
                     "COCOINDEX_DATABASE_URL",
-                    "COCOINDEX_DATABASE_USER", 
+                    "COCOINDEX_DATABASE_USER",
                     "COCOINDEX_DATABASE_PASSWORD",
                 ]:
                     os.environ.pop(env_var, None)
@@ -70,7 +70,7 @@ class TestContentHashFunctionality:
                 # Test processing files
                 result1 = process_files.eval(file1_content)
                 result2 = process_files.eval(file2_content)
-                
+
                 assert result1 == f"processed: {file1_content}"
                 assert result2 == f"processed: {file2_content}"
 
@@ -78,7 +78,7 @@ class TestContentHashFunctionality:
         """Test that content hash is computed correctly."""
         # Test content hash computation with known content
         test_content = "Hello, World!"
-        
+
         # Remove database environment variables
         with patch.dict(os.environ, {}, clear=False):
             for env_var in [
@@ -105,7 +105,7 @@ class TestContentHashFunctionality:
             # Process the same content multiple times
             result1 = hash_test_flow.eval(test_content)
             result2 = hash_test_flow.eval(test_content)
-            
+
             # Results should be identical for identical content
             assert result1 == result2
             assert result1 == f"hash_test: {test_content}"
@@ -114,7 +114,7 @@ class TestContentHashFunctionality:
         """Test that content change detection works correctly."""
         with tempfile.TemporaryDirectory() as temp_dir:
             test_file = Path(temp_dir) / "changing_file.txt"
-            
+
             # Initial content
             initial_content = "Initial content"
             test_file.write_text(initial_content)
@@ -149,7 +149,7 @@ class TestContentHashFunctionality:
                 # Change content and process again
                 changed_content = "Changed content"
                 test_file.write_text(changed_content)
-                
+
                 result2 = change_detection_flow.eval(changed_content)
                 assert result2 == f"version: {changed_content}"
                 assert result1 != result2
@@ -159,12 +159,13 @@ class TestContentHashFunctionality:
         with tempfile.TemporaryDirectory() as temp_dir:
             file1 = Path(temp_dir) / "file1.txt"
             file2 = Path(temp_dir) / "file2.txt"
-            
+
             content = "Identical content for both files"
-            
+
             # Create files with same content but different timestamps
             file1.write_text(content)
             import time
+
             time.sleep(0.1)  # Small delay to ensure different timestamps
             file2.write_text(content)
 
@@ -194,15 +195,15 @@ class TestContentHashFunctionality:
                 # Process both files - should produce identical results
                 result1 = timestamp_test_flow.eval(content)
                 result2 = timestamp_test_flow.eval(content)
-                
+
                 assert result1 == result2
                 assert result1 == f"content_hash: {content}"
 
     def test_content_hash_with_binary_data(self):
         """Test content hash functionality with binary data."""
         # Create binary test data
-        binary_data = b'\x00\x01\x02\x03\x04\x05\xff\xfe\xfd'
-        
+        binary_data = b"\x00\x01\x02\x03\x04\x05\xff\xfe\xfd"
+
         # Remove database environment variables
         with patch.dict(os.environ, {}, clear=False):
             for env_var in [
@@ -227,9 +228,9 @@ class TestContentHashFunctionality:
                 return content.transform(process_binary_as_text)
 
             # Convert binary to string for processing
-            text_data = binary_data.decode('latin1')  # Use latin1 to preserve all bytes
+            text_data = binary_data.decode("latin1")  # Use latin1 to preserve all bytes
             result = binary_test_flow.eval(text_data)
-            
+
             assert f"binary_processed: {len(text_data)} chars" == result
 
     def test_empty_content_hash(self):
@@ -265,7 +266,7 @@ class TestContentHashFunctionality:
         """Test content hash with large content."""
         # Create large content
         large_content = "A" * 10000 + "B" * 10000 + "C" * 10000
-        
+
         # Remove database environment variables
         with patch.dict(os.environ, {}, clear=False):
             for env_var in [
@@ -297,7 +298,7 @@ class TestContentHashFunctionality:
         """Test content hash with Unicode content."""
         # Create Unicode content with various characters
         unicode_content = "Hello 世界! 🌍 Здравствуй мир! مرحبا بالعالم!"
-        
+
         # Remove database environment variables
         with patch.dict(os.environ, {}, clear=False):
             for env_var in [
@@ -328,7 +329,7 @@ class TestContentHashFunctionality:
     def test_content_hash_consistency(self):
         """Test that content hash is consistent across multiple runs."""
         test_content = "Consistency test content"
-        
+
         # Remove database environment variables
         with patch.dict(os.environ, {}, clear=False):
             for env_var in [
@@ -410,8 +411,12 @@ if __name__ == "__main__":
                 @op.function()
                 def extract_functions(code: str) -> str:
                     """Extract function information from code."""
-                    lines = code.strip().split('\n')
-                    functions = [line.strip() for line in lines if line.strip().startswith('def ')]
+                    lines = code.strip().split("\n")
+                    functions = [
+                        line.strip()
+                        for line in lines
+                        if line.strip().startswith("def ")
+                    ]
                     return f"functions: {functions}"
 
                 @cocoindex.transform_flow()
@@ -423,19 +428,20 @@ if __name__ == "__main__":
 
                 # First processing
                 result1 = code_analysis_flow.eval(content)
-                
+
                 # Simulate git checkout by updating file timestamp but keeping same content
                 import time
+
                 time.sleep(0.1)
                 test_file.write_text(content)  # Same content, new timestamp
                 new_mtime = test_file.stat().st_mtime
-                
+
                 # Verify timestamp changed
                 assert new_mtime > original_mtime
-                
+
                 # Second processing - should produce same result due to content hash
                 result2 = code_analysis_flow.eval(content)
-                
+
                 assert result1 == result2
                 expected = "functions: ['def hello_world():']"
                 assert result1 == expected
@@ -446,10 +452,10 @@ if __name__ == "__main__":
             # Create multiple files
             files_content = {
                 "file1.txt": "Content of file 1",
-                "file2.txt": "Content of file 2", 
+                "file2.txt": "Content of file 2",
                 "file3.txt": "Content of file 3",
             }
-            
+
             file_paths = {}
             for filename, content in files_content.items():
                 file_path = Path(temp_dir) / filename
@@ -498,7 +504,10 @@ if __name__ == "__main__":
                 # file1 and file3 should have same results (unchanged content)
                 assert initial_results["file1.txt"] == updated_results["file1.txt"]
                 assert initial_results["file3.txt"] == updated_results["file3.txt"]
-                
+
                 # file2 should have different result (changed content)
                 assert initial_results["file2.txt"] != updated_results["file2.txt"]
-                assert updated_results["file2.txt"] == "processed: Modified content of file 2" 
+                assert (
+                    updated_results["file2.txt"]
+                    == "processed: Modified content of file 2"
+                )
