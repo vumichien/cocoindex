@@ -44,7 +44,6 @@ async fn upgrade_tracking_table(
     }
     
     if existing_version_id < 2 && target_version_id >= 2 {
-        // Add content hash column for content-based change detection
         let query = format!(
             "ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS processed_source_content_hash BYTEA;",
         );

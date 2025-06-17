@@ -44,8 +44,6 @@ pub enum SourceVersionKind {
 pub struct SourceVersion {
     pub ordinal: Ordinal,
     pub kind: SourceVersionKind,
-    /// Content hash for detecting actual content changes.
-    /// When available, this is used alongside ordinal for more accurate change detection.
     pub content_hash: Option<Fingerprint>,
 }
 

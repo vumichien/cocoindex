@@ -13,7 +13,6 @@ pub struct TrackedTargetKeyInfo {
     pub key: serde_json::Value,
     pub additional_key: serde_json::Value,
     pub process_ordinal: i64,
-    // None means deletion.
     pub fingerprint: Option<Fingerprint>,
 }
 

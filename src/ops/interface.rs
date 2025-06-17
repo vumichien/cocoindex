@@ -52,8 +52,6 @@ impl<TZ: TimeZone> TryFrom<chrono::DateTime<TZ>> for Ordinal {
 pub struct PartialSourceRowMetadata {
     pub key: KeyValue,
     pub ordinal: Option<Ordinal>,
-    /// Content hash for detecting actual content changes.
-    /// This helps skip processing when only modification time changed (e.g., git checkout).
     pub content_hash: Option<Fingerprint>,
 }
 
@@ -86,7 +84,6 @@ impl SourceValue {
 pub struct SourceData {
     pub value: SourceValue,
     pub ordinal: Ordinal,
-    /// Content hash for detecting actual content changes.
     pub content_hash: Option<Fingerprint>,
 }
 
