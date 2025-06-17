@@ -44,12 +44,16 @@ pub enum SourceVersionKind {
 pub struct SourceVersion {
     pub ordinal: Ordinal,
     pub kind: SourceVersionKind,
+    /// Content hash for detecting actual content changes.
+    /// When available, this is used alongside ordinal for more accurate change detection.
+    pub content_hash: Option<Fingerprint>,
 }
 
 impl SourceVersion {
     pub fn from_stored(
         stored_ordinal: Option<i64>,
         stored_fp: &Option<Vec<u8>>,
+        stored_content_hash: &Option<Vec<u8>>,
         curr_fp: Fingerprint,
     ) -> Self {
         Self {
@@ -64,13 +68,21 @@ impl SourceVersion {
                 }
                 None => SourceVersionKind::UnknownLogic,
             },
+            content_hash: stored_content_hash.as_ref().map(|hash| {
+                let mut bytes = [0u8; 16];
+                if hash.len() >= 16 {
+                    bytes.copy_from_slice(&hash[..16]);
+                }
+                Fingerprint(bytes)
+            }),
         }
     }
 
-    pub fn from_current(ordinal: Ordinal) -> Self {
+    pub fn from_current_with_hash(ordinal: Ordinal, content_hash: Option<Fingerprint>) -> Self {
         Self {
             ordinal,
             kind: SourceVersionKind::CurrentLogic,
+            content_hash,
         }
     }
 
@@ -82,6 +94,7 @@ impl SourceVersion {
         Self {
             ordinal: data.ordinal,
             kind,
+            content_hash: data.content_hash,
         }
     }
 
@@ -91,8 +104,18 @@ impl SourceVersion {
         update_stats: Option<&stats::UpdateStats>,
     ) -> bool {
         let should_skip = match (self.ordinal.0, target.ordinal.0) {
-            (Some(orginal), Some(target_ordinal)) => {
-                orginal > target_ordinal || (orginal == target_ordinal && self.kind >= target.kind)
+            (Some(existing_ordinal), Some(target_ordinal)) => {
+                // If logic versions are different, never skip (must reprocess)
+                if self.kind != target.kind {
+                    false
+                } else if let (Some(existing_hash), Some(target_hash)) = (&self.content_hash, &target.content_hash) {
+                    // Same logic version and we have content hashes for both versions
+                    // Content hasn't changed - skip processing
+                    existing_hash == target_hash
+                } else {
+                    // Fall back to ordinal-based comparison when content hash is not available
+                    existing_ordinal > target_ordinal || (existing_ordinal == target_ordinal && self.kind >= target.kind)
+                }
             }
             _ => false,
         };
@@ -174,6 +197,7 @@ async fn precommit_source_tracking_info(
         let existing_source_version = SourceVersion::from_stored(
             tracking_info.processed_source_ordinal,
             &tracking_info.process_logic_fingerprint,
+            &tracking_info.processed_source_content_hash,
             logic_fp,
         );
         if existing_source_version.should_skip(source_version, Some(update_stats)) {
@@ -453,6 +477,7 @@ async fn commit_source_tracking_info(
             cleaned_staging_target_keys,
             source_version.ordinal.into(),
             logic_fingerprint,
+            source_version.content_hash.as_ref().map(|h| h.0.as_slice()),
             precommit_metadata.process_ordinal,
             process_timestamp.timestamp_micros(),
             precommit_metadata.new_target_keys,
@@ -500,7 +525,8 @@ pub async fn evaluate_source_entry_with_memory(
             src_eval_ctx.key,
             &SourceExecutorGetOptions {
                 include_value: true,
-                include_ordinal: false,
+                include_ordinal: true,
+                include_content_hash: true,
             },
         )
         .await?
@@ -538,6 +564,7 @@ pub async fn update_source_row(
             let existing_version = SourceVersion::from_stored(
                 info.processed_source_ordinal,
                 &info.process_logic_fingerprint,
+                &info.processed_source_content_hash,
                 src_eval_ctx.plan.logic_fingerprint,
             );
             if existing_version.should_skip(source_version, Some(update_stats)) {
@@ -650,4 +677,278 @@ pub async fn update_source_row(
     }
 
     Ok(SkippedOr::Normal(()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::fingerprint::Fingerprinter;
+    use crate::ops::interface::{SourceExecutorListOptions, SourceExecutorGetOptions};
+
+    #[test]
+    fn test_should_skip_with_same_content_hash() {
+        let content_hash = Fingerprinter::default()
+            .with(&"test content".to_string())
+            .unwrap()
+            .into_fingerprint();
+        
+        let existing_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: Some(content_hash),
+        };
+        
+        let target_version = SourceVersion {
+            ordinal: Ordinal(Some(200)), // Newer timestamp
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: Some(content_hash), // Same content
+        };
+        
+        // Should skip because content is the same, despite newer timestamp
+        assert!(existing_version.should_skip(&target_version, None));
+    }
+
+    #[test]
+    fn test_should_not_skip_with_different_content_hash() {
+        let old_content_hash = Fingerprinter::default()
+            .with(&"old content".to_string())
+            .unwrap()
+            .into_fingerprint();
+            
+        let new_content_hash = Fingerprinter::default()
+            .with(&"new content".to_string())
+            .unwrap()
+            .into_fingerprint();
+        
+        let existing_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: Some(old_content_hash),
+        };
+        
+        let target_version = SourceVersion {
+            ordinal: Ordinal(Some(200)),
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: Some(new_content_hash),
+        };
+        
+        // Should not skip because content is different
+        assert!(!existing_version.should_skip(&target_version, None));
+    }
+
+    #[test]
+    fn test_fallback_to_ordinal_when_no_content_hash() {
+        let existing_version = SourceVersion {
+            ordinal: Ordinal(Some(200)),
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: None, // No content hash
+        };
+        
+        let target_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: None,
+        };
+        
+        // Should skip because existing ordinal > target ordinal
+        assert!(existing_version.should_skip(&target_version, None));
+    }
+
+    #[test]
+    fn test_mixed_content_hash_availability() {
+        let content_hash = Fingerprinter::default()
+            .with(&"test content".to_string())
+            .unwrap()
+            .into_fingerprint();
+            
+        let existing_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: Some(content_hash),
+        };
+        
+        let target_version = SourceVersion {
+            ordinal: Ordinal(Some(200)),
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: None, // No content hash for target
+        };
+        
+        // Should fallback to ordinal comparison
+        assert!(!existing_version.should_skip(&target_version, None));
+    }
+
+    #[test]
+    fn test_github_actions_scenario_simulation() {
+        // Simulate the exact GitHub Actions scenario
+        
+        // Initial state: file processed with content hash
+        let initial_content = "def main():\n    print('Hello, World!')\n";
+        let initial_hash = Fingerprinter::default()
+            .with(&initial_content.to_string())
+            .unwrap()
+            .into_fingerprint();
+        
+        let processed_version = SourceVersion {
+            ordinal: Ordinal(Some(1000)), // Original timestamp
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: Some(initial_hash),
+        };
+        
+        // GitHub Actions checkout: timestamp changes but content same
+        let after_checkout_version = SourceVersion {
+            ordinal: Ordinal(Some(2000)), // New timestamp after checkout
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: Some(initial_hash), // Same content hash
+        };
+        
+        // Should skip processing (this is the key improvement)
+        assert!(processed_version.should_skip(&after_checkout_version, None));
+        
+        // Now simulate actual content change
+        let updated_content = "def main():\n    print('Hello, Updated World!')\n";
+        let updated_hash = Fingerprinter::default()
+            .with(&updated_content.to_string())
+            .unwrap()
+            .into_fingerprint();
+        
+        let content_changed_version = SourceVersion {
+            ordinal: Ordinal(Some(3000)), // Even newer timestamp
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: Some(updated_hash), // Different content hash
+        };
+        
+        // Should NOT skip processing (content actually changed)
+        assert!(!processed_version.should_skip(&content_changed_version, None));
+    }
+
+    #[test]
+    fn test_source_version_from_stored_with_content_hash() {
+        let logic_fp = Fingerprinter::default()
+            .with(&"logic_v1".to_string())
+            .unwrap()
+            .into_fingerprint();
+        
+        let content_hash_bytes = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        
+        let version = SourceVersion::from_stored(
+            Some(1000),
+            &Some(logic_fp.0.to_vec()),
+            &Some(content_hash_bytes.clone()),
+            logic_fp,
+        );
+        
+        assert_eq!(version.ordinal.0, Some(1000));
+        assert!(matches!(version.kind, SourceVersionKind::CurrentLogic));
+        assert!(version.content_hash.is_some());
+        
+        // Verify content hash is properly reconstructed
+        let reconstructed_hash = version.content_hash.unwrap();
+        assert_eq!(reconstructed_hash.0.as_slice(), &content_hash_bytes[..16]);
+    }
+
+    #[test]
+    fn test_content_hash_priority_over_ordinal() {
+        // Test that content hash comparison takes priority over ordinal comparison
+        
+        let same_content_hash = Fingerprinter::default()
+            .with(&"same content".to_string())
+            .unwrap()
+            .into_fingerprint();
+        
+        // Case 1: Same content hash, newer ordinal -> should skip
+        let existing = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: Some(same_content_hash),
+        };
+        
+        let target = SourceVersion {
+            ordinal: Ordinal(Some(200)), // Much newer
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: Some(same_content_hash), // But same content
+        };
+        
+        assert!(existing.should_skip(&target, None));
+        
+        // Case 2: Different content hash, older ordinal -> should NOT skip
+        let different_content_hash = Fingerprinter::default()
+            .with(&"different content".to_string())
+            .unwrap()
+            .into_fingerprint();
+        
+        let target_different = SourceVersion {
+            ordinal: Ordinal(Some(50)), // Older timestamp
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: Some(different_content_hash), // But different content
+        };
+        
+        assert!(!existing.should_skip(&target_different, None));
+    }
+
+    #[test]
+    fn test_backward_compatibility_without_content_hash() {
+        // Ensure the system still works when content hashes are not available
+        
+        let existing_no_hash = SourceVersion {
+            ordinal: Ordinal(Some(200)),
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: None,
+        };
+        
+        let target_no_hash = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: None,
+        };
+        
+        // Should fall back to ordinal comparison
+        assert!(existing_no_hash.should_skip(&target_no_hash, None));
+        
+        // Reverse case
+        assert!(!target_no_hash.should_skip(&existing_no_hash, None));
+    }
+
+    #[test]
+    fn test_content_hash_with_different_logic_versions() {
+        let content_hash = Fingerprinter::default()
+            .with(&"test content".to_string())
+            .unwrap()
+            .into_fingerprint();
+        
+        // Same content but different logic version should not skip
+        let existing = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::DifferentLogic, // Different logic
+            content_hash: Some(content_hash),
+        };
+        
+        let target = SourceVersion {
+            ordinal: Ordinal(Some(200)),
+            kind: SourceVersionKind::CurrentLogic,
+            content_hash: Some(content_hash), // Same content
+        };
+        
+        // Should not skip because logic is different
+        assert!(!existing.should_skip(&target, None));
+    }
+
+    #[test]
+    fn test_source_executor_options_include_content_hash() {
+        // Test that the new include_content_hash option is properly handled
+        
+        let list_options = SourceExecutorListOptions {
+            include_ordinal: true,
+            include_content_hash: true,
+        };
+        
+        assert!(list_options.include_content_hash);
+        
+        let get_options = SourceExecutorGetOptions {
+            include_value: true,
+            include_ordinal: true,
+            include_content_hash: true,
+        };
+        
+        assert!(get_options.include_content_hash);
+    }
 }

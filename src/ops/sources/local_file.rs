@@ -7,6 +7,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use crate::base::field_attrs;
 use crate::{fields_value, ops::sdk::*};
+use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
@@ -68,10 +69,23 @@ impl SourceExecutor for Executor {
                         } else {
                             None
                         };
+                        
+                        let content_hash: Option<Fingerprint> = if options.include_content_hash {
+                            match std::fs::read(&path) {
+                                Ok(content) => {
+                                    Some(Fingerprinter::default().with(&content)?.into_fingerprint())
+                                }
+                                Err(_) => None, // File might have been deleted or is inaccessible
+                            }
+                        } else {
+                            None
+                        };
+                        
                         if let Some(relative_path) = relative_path.to_str() {
                             yield vec![PartialSourceRowMetadata {
                                 key: KeyValue::Str(relative_path.into()),
                                 ordinal,
+                                content_hash,
                             }];
                         } else {
                             warn!("Skipped ill-formed file path: {}", path.display());
@@ -93,6 +107,7 @@ impl SourceExecutor for Executor {
             return Ok(PartialSourceRowData {
                 value: Some(SourceValue::NonExistence),
                 ordinal: Some(Ordinal::unavailable()),
+                content_hash: None,
             });
         }
         let path = self.root_path.join(key.str_value()?.as_ref());
@@ -101,25 +116,43 @@ impl SourceExecutor for Executor {
         } else {
             None
         };
-        let value = if options.include_value {
-            match std::fs::read(path) {
+        
+        let (value, content_hash) = if options.include_value || options.include_content_hash {
+            match std::fs::read(&path) {
                 Ok(content) => {
-                    let content = if self.binary {
-                        fields_value!(content)
+                    let content_hash = if options.include_content_hash {
+                        Some(Fingerprinter::default().with(&content)?.into_fingerprint())
                     } else {
-                        fields_value!(String::from_utf8_lossy(&content).to_string())
+                        None
                     };
-                    Some(SourceValue::Existence(content))
+                    
+                    let value = if options.include_value {
+                        let content_value = if self.binary {
+                            fields_value!(content)
+                        } else {
+                            fields_value!(String::from_utf8_lossy(&content).to_string())
+                        };
+                        Some(SourceValue::Existence(content_value))
+                    } else {
+                        None
+                    };
+                    
+                    (value, content_hash)
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    Some(SourceValue::NonExistence)
+                    (Some(SourceValue::NonExistence), None)
                 }
-                Err(e) => Err(e)?,
+                Err(e) => return Err(e.into()),
             }
         } else {
-            None
+            (None, None)
         };
-        Ok(PartialSourceRowData { value, ordinal })
+        
+        Ok(PartialSourceRowData { 
+            value, 
+            ordinal,
+            content_hash,
+        })
     }
 }
 

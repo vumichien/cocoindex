@@ -37,7 +37,8 @@ pub async fn get_source_row_indexing_status(
         &src_eval_ctx.key,
         &interface::SourceExecutorGetOptions {
             include_value: false,
-            include_ordinal: true,
+            include_ordinal: false,
+            include_content_hash: false,
         },
     );
     let (last_processed, current) = try_join!(last_processed_fut, current_fut)?;

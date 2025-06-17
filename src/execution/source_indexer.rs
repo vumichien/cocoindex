@@ -65,6 +65,7 @@ impl SourceIndexingContext {
                     source_version: SourceVersion::from_stored(
                         key_metadata.processed_source_ordinal,
                         &key_metadata.process_logic_fingerprint,
+                        &key_metadata.processed_source_content_hash,
                         plan.logic_fingerprint,
                     ),
                     processing_sem: Arc::new(Semaphore::new(1)),
@@ -106,6 +107,7 @@ impl SourceIndexingContext {
                         &interface::SourceExecutorGetOptions {
                             include_value: true,
                             include_ordinal: true,
+                            include_content_hash: true,
                         },
                     )
                     .await?
@@ -234,6 +236,7 @@ impl SourceIndexingContext {
             .executor
             .list(&interface::SourceExecutorListOptions {
                 include_ordinal: true,
+                include_content_hash: true,
             });
         let mut join_set = JoinSet::new();
         let scan_generation = {
@@ -245,9 +248,10 @@ impl SourceIndexingContext {
             for row in row? {
                 self.process_source_key_if_newer(
                     row.key,
-                    SourceVersion::from_current(
+                    SourceVersion::from_current_with_hash(
                         row.ordinal
                             .ok_or_else(|| anyhow::anyhow!("ordinal is not available"))?,
+                        row.content_hash,
                     ),
                     update_stats,
                     pool,
@@ -280,6 +284,7 @@ impl SourceIndexingContext {
                 .then(|| interface::SourceData {
                     value: interface::SourceValue::NonExistence,
                     ordinal: source_ordinal,
+                    content_hash: None,
                 });
             join_set.spawn(self.clone().process_source_key(
                 key,

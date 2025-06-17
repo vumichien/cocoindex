@@ -11,6 +11,7 @@ use phf::phf_map;
 
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
+use crate::utils::fingerprint::Fingerprinter;
 
 struct ExportMimeType {
     text: &'static str,
@@ -115,6 +116,7 @@ impl Executor {
         file: File,
         new_folder_ids: &mut Vec<Arc<str>>,
         seen_ids: &mut HashSet<Arc<str>>,
+        options: &SourceExecutorListOptions,
     ) -> Result<Option<PartialSourceRowMetadata>> {
         if file.trashed == Some(true) {
             return Ok(None);
@@ -133,9 +135,19 @@ impl Executor {
             new_folder_ids.push(id);
             None
         } else if is_supported_file_type(&mime_type) {
+            let content_hash = if options.include_content_hash {
+                // For Google Drive, we would need to download the file to compute content hash
+                // This is expensive during listing, so we'll compute it lazily in get_value
+                // For now, we'll use the file's modifiedTime as a proxy
+                None
+            } else {
+                None
+            };
+            
             Some(PartialSourceRowMetadata {
                 key: KeyValue::Str(id),
                 ordinal: file.modified_time.map(|t| t.try_into()).transpose()?,
+                content_hash,
             })
         } else {
             None
@@ -305,7 +317,7 @@ impl SourceExecutor for Executor {
                         .list_files(&folder_id, &fields, &mut next_page_token)
                         .await?;
                     for file in files {
-                        curr_rows.extend(self.visit_file(file, &mut new_folder_ids, &mut seen_ids)?);
+                        curr_rows.extend(self.visit_file(file, &mut new_folder_ids, &mut seen_ids, options)?);
                     }
                     if !curr_rows.is_empty() {
                         yield curr_rows;
@@ -345,6 +357,7 @@ impl SourceExecutor for Executor {
                 return Ok(PartialSourceRowData {
                     value: Some(SourceValue::NonExistence),
                     ordinal: Some(Ordinal::unavailable()),
+                    content_hash: None,
                 });
             }
         };
@@ -353,55 +366,79 @@ impl SourceExecutor for Executor {
         } else {
             None
         };
-        let type_n_body = if let Some(export_mime_type) = file
-            .mime_type
-            .as_ref()
-            .and_then(|mime_type| EXPORT_MIME_TYPES.get(mime_type.as_str()))
-        {
-            let target_mime_type = if self.binary {
-                export_mime_type.binary
+        
+        let (value, content_hash) = if options.include_value || options.include_content_hash {
+            let type_n_body = if let Some(export_mime_type) = file
+                .mime_type
+                .as_ref()
+                .and_then(|mime_type| EXPORT_MIME_TYPES.get(mime_type.as_str()))
+            {
+                let target_mime_type = if self.binary {
+                    export_mime_type.binary
+                } else {
+                    export_mime_type.text
+                };
+                self.drive_hub
+                    .files()
+                    .export(file_id, target_mime_type)
+                    .add_scope(Scope::Readonly)
+                    .doit()
+                    .await
+                    .or_not_found()?
+                    .map(|content| (Some(target_mime_type.to_string()), content.into_body()))
             } else {
-                export_mime_type.text
+                self.drive_hub
+                    .files()
+                    .get(file_id)
+                    .add_scope(Scope::Readonly)
+                    .param("alt", "media")
+                    .doit()
+                    .await
+                    .or_not_found()?
+                    .map(|(resp, _)| (file.mime_type, resp.into_body()))
             };
-            self.drive_hub
-                .files()
-                .export(file_id, target_mime_type)
-                .add_scope(Scope::Readonly)
-                .doit()
-                .await
-                .or_not_found()?
-                .map(|content| (Some(target_mime_type.to_string()), content.into_body()))
-        } else {
-            self.drive_hub
-                .files()
-                .get(file_id)
-                .add_scope(Scope::Readonly)
-                .param("alt", "media")
-                .doit()
-                .await
-                .or_not_found()?
-                .map(|(resp, _)| (file.mime_type, resp.into_body()))
-        };
-        let value = match type_n_body {
-            Some((mime_type, resp_body)) => {
-                let content = resp_body.collect().await?;
-
-                let fields = vec![
-                    file.name.unwrap_or_default().into(),
-                    mime_type.into(),
-                    if self.binary {
-                        content.to_bytes().to_vec().into()
+            
+            match type_n_body {
+                Some((mime_type, resp_body)) => {
+                    let content = resp_body.collect().await?;
+                    let content_bytes = content.to_bytes();
+                    
+                    let content_hash = if options.include_content_hash {
+                        Some(Fingerprinter::default().with(&content_bytes)?.into_fingerprint())
                     } else {
-                        String::from_utf8_lossy(&content.to_bytes())
-                            .to_string()
-                            .into()
-                    },
-                ];
-                Some(SourceValue::Existence(FieldValues { fields }))
+                        None
+                    };
+                    
+                    let value = if options.include_value {
+                        let fields = vec![
+                            file.name.unwrap_or_default().into(),
+                            mime_type.into(),
+                            if self.binary {
+                                content_bytes.to_vec().into()
+                            } else {
+                                String::from_utf8_lossy(&content_bytes)
+                                    .to_string()
+                                    .into()
+                            },
+                        ];
+                        Some(SourceValue::Existence(FieldValues { fields }))
+                    } else {
+                        None
+                    };
+                    
+                    (value, content_hash)
+                }
+                None => (Some(SourceValue::NonExistence), None),
             }
-            None => None,
+        } else {
+            (None, None)
         };
-        Ok(PartialSourceRowData { value, ordinal })
+        
+        Ok(PartialSourceRowData { 
+            value, 
+            ordinal,
+            content_hash,
+        })
     }
 
     async fn change_stream(
