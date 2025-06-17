@@ -1,3 +1,4 @@
+# type: ignore
 import os
 import tempfile
 import hashlib
@@ -13,7 +14,7 @@ from cocoindex.setting import Settings
 class TestContentHashFunctionality:
     """Test suite for content hash functionality."""
 
-    def setup_method(self):
+    def setup_method(self) -> None:
         """Setup method called before each test."""
         # Stop any existing cocoindex instance
         try:
@@ -21,7 +22,7 @@ class TestContentHashFunctionality:
         except:
             pass
 
-    def teardown_method(self):
+    def teardown_method(self) -> None:
         """Teardown method called after each test."""
         # Stop cocoindex instance after each test
         try:
@@ -29,7 +30,7 @@ class TestContentHashFunctionality:
         except:
             pass
 
-    def test_content_hash_with_local_files(self):
+    def test_content_hash_with_local_files(self) -> None:
         """Test that content hash works correctly with local file sources."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create test files
@@ -74,7 +75,7 @@ class TestContentHashFunctionality:
                 assert result1 == f"processed: {file1_content}"
                 assert result2 == f"processed: {file2_content}"
 
-    def test_content_hash_computation(self):
+    def test_content_hash_computation(self) -> None:
         """Test that content hash is computed correctly."""
         # Test content hash computation with known content
         test_content = "Hello, World!"
@@ -110,7 +111,7 @@ class TestContentHashFunctionality:
             assert result1 == result2
             assert result1 == f"hash_test: {test_content}"
 
-    def test_content_change_detection(self):
+    def test_content_change_detection(self) -> None:
         """Test that content change detection works correctly."""
         with tempfile.TemporaryDirectory() as temp_dir:
             test_file = Path(temp_dir) / "changing_file.txt"
@@ -154,7 +155,7 @@ class TestContentHashFunctionality:
                 assert result2 == f"version: {changed_content}"
                 assert result1 != result2
 
-    def test_identical_content_different_timestamps(self):
+    def test_identical_content_different_timestamps(self) -> None:
         """Test that identical content with different timestamps is handled correctly."""
         with tempfile.TemporaryDirectory() as temp_dir:
             file1 = Path(temp_dir) / "file1.txt"
@@ -199,7 +200,7 @@ class TestContentHashFunctionality:
                 assert result1 == result2
                 assert result1 == f"content_hash: {content}"
 
-    def test_content_hash_with_binary_data(self):
+    def test_content_hash_with_binary_data(self) -> None:
         """Test content hash functionality with binary data."""
         # Create binary test data
         binary_data = b"\x00\x01\x02\x03\x04\x05\xff\xfe\xfd"
@@ -233,7 +234,7 @@ class TestContentHashFunctionality:
 
             assert f"binary_processed: {len(text_data)} chars" == result
 
-    def test_empty_content_hash(self):
+    def test_empty_content_hash(self) -> None:
         """Test content hash with empty content."""
         # Remove database environment variables
         with patch.dict(os.environ, {}, clear=False):
@@ -262,7 +263,7 @@ class TestContentHashFunctionality:
             result = empty_content_flow.eval("")
             assert result == "empty_check: '' (length: 0)"
 
-    def test_large_content_hash(self):
+    def test_large_content_hash(self) -> None:
         """Test content hash with large content."""
         # Create large content
         large_content = "A" * 10000 + "B" * 10000 + "C" * 10000
@@ -294,7 +295,7 @@ class TestContentHashFunctionality:
             expected = f"large_content: {len(large_content)} chars, starts_with: {large_content[:10]}"
             assert result == expected
 
-    def test_unicode_content_hash(self):
+    def test_unicode_content_hash(self) -> None:
         """Test content hash with Unicode content."""
         # Create Unicode content with various characters
         unicode_content = "Hello 世界! 🌍 Здравствуй мир! مرحبا بالعالم!"
@@ -326,7 +327,7 @@ class TestContentHashFunctionality:
             expected = f"unicode: {unicode_content} (length: {len(unicode_content)})"
             assert result == expected
 
-    def test_content_hash_consistency(self):
+    def test_content_hash_consistency(self) -> None:
         """Test that content hash is consistent across multiple runs."""
         test_content = "Consistency test content"
 
@@ -367,21 +368,21 @@ class TestContentHashFunctionality:
 class TestContentHashIntegration:
     """Integration tests for content hash with different scenarios."""
 
-    def setup_method(self):
+    def setup_method(self) -> None:
         """Setup method called before each test."""
         try:
             cocoindex.stop()
         except:
             pass
 
-    def teardown_method(self):
+    def teardown_method(self) -> None:
         """Teardown method called after each test."""
         try:
             cocoindex.stop()
         except:
             pass
 
-    def test_github_actions_simulation(self):
+    def test_github_actions_simulation(self) -> None:
         """Simulate GitHub Actions scenario where file timestamps change but content doesn't."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create a file
@@ -446,7 +447,7 @@ if __name__ == "__main__":
                 expected = "functions: ['def hello_world():']"
                 assert result1 == expected
 
-    def test_incremental_processing_simulation(self):
+    def test_incremental_processing_simulation(self) -> None:
         """Simulate incremental processing where only some files change."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create multiple files
