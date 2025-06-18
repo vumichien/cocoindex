@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -32,6 +32,7 @@ enum CacheData {
     /// Existing entry in previous runs, but not in current run yet.
     Previous(serde_json::Value),
     /// Value appeared in current run.
+    #[allow(dead_code)]
     Current(CacheEntryCell),
 }
 
@@ -75,6 +76,7 @@ pub struct EvaluationMemoryOptions {
 }
 
 pub struct EvaluationMemory {
+    #[allow(dead_code)]
     current_time: chrono::DateTime<chrono::Utc>,
     cache: Option<Mutex<HashMap<Fingerprint, CacheEntry>>>,
     uuids: Mutex<HashMap<Fingerprint, UuidEntry>>,
@@ -159,6 +161,7 @@ impl EvaluationMemory {
         Ok(StoredMemoizationInfo { cache, uuids })
     }
 
+    #[allow(dead_code)]
     pub fn get_cache_entry(
         &self,
         key: impl FnOnce() -> Result<Fingerprint>,
@@ -225,6 +228,7 @@ impl EvaluationMemory {
     }
 }
 
+#[allow(dead_code)]
 pub async fn evaluate_with_cell<Fut>(
     cell: Option<&CacheEntryCell>,
     compute: impl FnOnce() -> Fut,

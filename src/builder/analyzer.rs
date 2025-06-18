@@ -205,35 +205,77 @@ fn try_merge_fields_schemas(
     schema1: &[FieldSchema],
     schema2: &[FieldSchema],
 ) -> Result<Vec<FieldSchema>> {
-    if schema1.len() != schema2.len() {
-        api_bail!(
-            "Fields are not compatible as they have different fields count:\n  ({})\n  ({})\n",
-            schema1
-                .iter()
-                .map(|f| f.to_string())
-                .collect::<Vec<_>>()
-                .join(", "),
-            schema2
-                .iter()
-                .map(|f| f.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+    // Create a map of field names to schemas for both input schemas
+    let mut field_map1: std::collections::HashMap<String, &FieldSchema> =
+        std::collections::HashMap::new();
+    let mut field_map2: std::collections::HashMap<String, &FieldSchema> =
+        std::collections::HashMap::new();
+
+    for field in schema1 {
+        field_map1.insert(field.name.clone(), field);
     }
-    let mut result_fields = Vec::with_capacity(schema1.len());
-    for (field1, field2) in schema1.iter().zip(schema2.iter()) {
-        if field1.name != field2.name {
-            api_bail!(
-                "Structs are not compatible as they have incompatible field names `{}` vs `{}`",
-                field1.name,
-                field2.name
-            );
+
+    for field in schema2 {
+        field_map2.insert(field.name.clone(), field);
+    }
+
+    // Collect all unique field names from both schemas
+    let mut all_field_names = std::collections::HashSet::new();
+    for field in schema1 {
+        all_field_names.insert(field.name.clone());
+    }
+    for field in schema2 {
+        all_field_names.insert(field.name.clone());
+    }
+
+    // Convert to sorted vector for deterministic ordering
+    let mut all_field_names: Vec<String> = all_field_names.into_iter().collect();
+    all_field_names.sort();
+
+    let mut result_fields = Vec::with_capacity(all_field_names.len());
+
+    for field_name in all_field_names {
+        match (field_map1.get(&field_name), field_map2.get(&field_name)) {
+            (Some(field1), Some(field2)) => {
+                // Field exists in both schemas - merge their types
+                let merged_type =
+                    try_make_common_value_type(&field1.value_type, &field2.value_type)?;
+                result_fields.push(FieldSchema {
+                    name: field_name,
+                    value_type: merged_type,
+                });
+            }
+            (Some(field1), None) => {
+                // Field only exists in schema1 - make it nullable since it won't be present in all collect calls
+                let nullable_type = EnrichedValueType {
+                    typ: field1.value_type.typ.clone(),
+                    nullable: true,
+                    attrs: field1.value_type.attrs.clone(),
+                };
+                result_fields.push(FieldSchema {
+                    name: field_name,
+                    value_type: nullable_type,
+                });
+            }
+            (None, Some(field2)) => {
+                // Field only exists in schema2 - make it nullable since it won't be present in all collect calls
+                let nullable_type = EnrichedValueType {
+                    typ: field2.value_type.typ.clone(),
+                    nullable: true,
+                    attrs: field2.value_type.attrs.clone(),
+                };
+                result_fields.push(FieldSchema {
+                    name: field_name,
+                    value_type: nullable_type,
+                });
+            }
+            (None, None) => {
+                // This should never happen since we're iterating over fields from both schemas
+                unreachable!("Field name should exist in at least one schema");
+            }
         }
-        result_fields.push(FieldSchema {
-            name: field1.name.clone(),
-            value_type: try_make_common_value_type(&field1.value_type, &field2.value_type)?,
-        });
     }
+
     Ok(result_fields)
 }
 
@@ -1336,4 +1378,160 @@ pub fn analyze_transient_flow<'a>(
         })
     };
     Ok((output_type, data_schema, plan_fut))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn test_collector_schema_merging() {
+        // Create first collector schema with fields: field1, field2
+        let schema1 = CollectorSchema {
+            fields: vec![
+                FieldSchema {
+                    name: "field1".to_string(),
+                    value_type: EnrichedValueType {
+                        typ: ValueType::Basic(BasicValueType::Str),
+                        nullable: false,
+                        attrs: Arc::new(BTreeMap::new()),
+                    },
+                },
+                FieldSchema {
+                    name: "field2".to_string(),
+                    value_type: EnrichedValueType {
+                        typ: ValueType::Basic(BasicValueType::Int64),
+                        nullable: false,
+                        attrs: Arc::new(BTreeMap::new()),
+                    },
+                },
+            ],
+            auto_uuid_field_idx: None,
+        };
+
+        // Create second collector schema with fields: field1, field3
+        let schema2 = CollectorSchema {
+            fields: vec![
+                FieldSchema {
+                    name: "field1".to_string(),
+                    value_type: EnrichedValueType {
+                        typ: ValueType::Basic(BasicValueType::Str),
+                        nullable: false,
+                        attrs: Arc::new(BTreeMap::new()),
+                    },
+                },
+                FieldSchema {
+                    name: "field3".to_string(),
+                    value_type: EnrichedValueType {
+                        typ: ValueType::Basic(BasicValueType::Bool),
+                        nullable: false,
+                        attrs: Arc::new(BTreeMap::new()),
+                    },
+                },
+            ],
+            auto_uuid_field_idx: None,
+        };
+
+        // Merge the schemas
+        let merged = try_merge_collector_schemas(&schema1, &schema2).unwrap();
+
+        // Verify the merged schema has all three fields
+        assert_eq!(merged.fields.len(), 3);
+
+        // Check field names are sorted and all present
+        let field_names: Vec<String> = merged.fields.iter().map(|f| f.name.clone()).collect();
+        assert_eq!(field_names, vec!["field1", "field2", "field3"]);
+
+        // Check that field1 remains non-nullable (present in both schemas)
+        let field1 = merged.fields.iter().find(|f| f.name == "field1").unwrap();
+        assert!(!field1.value_type.nullable);
+        assert!(matches!(
+            field1.value_type.typ,
+            ValueType::Basic(BasicValueType::Str)
+        ));
+
+        // Check that field2 becomes nullable (only in schema1)
+        let field2 = merged.fields.iter().find(|f| f.name == "field2").unwrap();
+        assert!(field2.value_type.nullable);
+        assert!(matches!(
+            field2.value_type.typ,
+            ValueType::Basic(BasicValueType::Int64)
+        ));
+
+        // Check that field3 becomes nullable (only in schema2)
+        let field3 = merged.fields.iter().find(|f| f.name == "field3").unwrap();
+        assert!(field3.value_type.nullable);
+        assert!(matches!(
+            field3.value_type.typ,
+            ValueType::Basic(BasicValueType::Bool)
+        ));
+    }
+
+    #[test]
+    fn test_collector_builder_schema_merging() {
+        // Test the CollectorBuilder merge functionality
+        let initial_schema = CollectorSchema {
+            fields: vec![FieldSchema {
+                name: "field1".to_string(),
+                value_type: EnrichedValueType {
+                    typ: ValueType::Basic(BasicValueType::Str),
+                    nullable: false,
+                    attrs: Arc::new(BTreeMap::new()),
+                },
+            }],
+            auto_uuid_field_idx: None,
+        };
+
+        let mut collector_builder = CollectorBuilder::new(Arc::new(initial_schema));
+
+        // Merge with a new schema
+        let new_schema = CollectorSchema {
+            fields: vec![
+                FieldSchema {
+                    name: "field1".to_string(),
+                    value_type: EnrichedValueType {
+                        typ: ValueType::Basic(BasicValueType::Str),
+                        nullable: false,
+                        attrs: Arc::new(BTreeMap::new()),
+                    },
+                },
+                FieldSchema {
+                    name: "field2".to_string(),
+                    value_type: EnrichedValueType {
+                        typ: ValueType::Basic(BasicValueType::Int64),
+                        nullable: false,
+                        attrs: Arc::new(BTreeMap::new()),
+                    },
+                },
+            ],
+            auto_uuid_field_idx: None,
+        };
+
+        collector_builder.merge_schema(&new_schema).unwrap();
+
+        // Get the final schema
+        let final_schema = collector_builder.use_schema();
+
+        // Verify the merged schema
+        assert_eq!(final_schema.fields.len(), 2);
+        let field_names: Vec<String> = final_schema.fields.iter().map(|f| f.name.clone()).collect();
+        assert_eq!(field_names, vec!["field1", "field2"]);
+
+        // field1 should remain non-nullable (present in both)
+        let field1 = final_schema
+            .fields
+            .iter()
+            .find(|f| f.name == "field1")
+            .unwrap();
+        assert!(!field1.value_type.nullable);
+
+        // field2 should be nullable (only in second schema)
+        let field2 = final_schema
+            .fields
+            .iter()
+            .find(|f| f.name == "field2")
+            .unwrap();
+        assert!(field2.value_type.nullable);
+    }
 }

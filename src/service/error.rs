@@ -151,6 +151,7 @@ impl<T> SharedResultExt<T> for Result<T, SharedError> {
 }
 
 pub trait SharedResultExtRef<'a, T> {
+    #[allow(dead_code)]
     fn std_result(self) -> Result<&'a T, SharedErrorWrapper>;
 }
 

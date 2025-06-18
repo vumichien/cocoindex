@@ -924,7 +924,14 @@ impl BasicValue {
             (serde_json::Value::String(v), BasicValueType::Date) => BasicValue::Date(v.parse()?),
             (serde_json::Value::String(v), BasicValueType::Time) => BasicValue::Time(v.parse()?),
             (serde_json::Value::String(v), BasicValueType::LocalDateTime) => {
-                BasicValue::LocalDateTime(v.parse()?)
+                BasicValue::LocalDateTime(
+                    chrono::NaiveDateTime::parse_from_str(&v, "%Y-%m-%dT%H:%M:%S%.f")
+                        .or_else(|_| chrono::NaiveDateTime::parse_from_str(&v, "%Y-%m-%dT%H:%M:%S"))
+                        .or_else(|_| v.parse())
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to parse LocalDateTime '{}': {}", v, e)
+                        })?,
+                )
             }
             (serde_json::Value::String(v), BasicValueType::OffsetDateTime) => {
                 match chrono::DateTime::parse_from_rfc3339(&v) {
