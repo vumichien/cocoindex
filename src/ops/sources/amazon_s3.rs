@@ -1,5 +1,5 @@
 use crate::fields_value;
-use async_stream::try_stream;
+use async_stream::{stream, try_stream};
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
-use crate::utils::fingerprint::Fingerprinter;
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
@@ -69,7 +68,7 @@ fn datetime_to_ordinal(dt: &aws_sdk_s3::primitives::DateTime) -> Ordinal {
 impl SourceExecutor for Executor {
     fn list<'a>(
         &'a self,
-        options: &'a SourceExecutorListOptions,
+        _options: &'a SourceExecutorListOptions,
     ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>> {
         try_stream! {
             let mut continuation_token = None;
@@ -99,35 +98,9 @@ impl SourceExecutor for Executor {
                                 .map(|gs| gs.is_match(key))
                                 .unwrap_or(false);
                             if include && !exclude {
-                                let content_hash = if options.include_content_hash {
-                                    // For S3, we can use ETag as a content hash if it's an MD5 hash
-                                    // (single-part uploads). For multipart uploads, ETag is not MD5.
-                                    // For now, we'll fetch the object to compute a proper hash.
-                                    match self.client
-                                        .get_object()
-                                        .bucket(&self.bucket_name)
-                                        .key(key)
-                                        .send()
-                                        .await
-                                    {
-                                        Ok(obj_resp) => {
-                                            match obj_resp.body.collect().await {
-                                                Ok(bytes) => {
-                                                    Some(Fingerprinter::default().with(&bytes.into_bytes())?.into_fingerprint())
-                                                }
-                                                Err(_) => None,
-                                            }
-                                        }
-                                        Err(_) => None,
-                                    }
-                                } else {
-                                    None
-                                };
-                                
                                 batch.push(PartialSourceRowMetadata {
                                     key: KeyValue::Str(key.to_string().into()),
                                     ordinal: obj.last_modified().map(datetime_to_ordinal),
-                                    content_hash,
                                 });
                             }
                         }
@@ -155,7 +128,6 @@ impl SourceExecutor for Executor {
             return Ok(PartialSourceRowData {
                 value: Some(SourceValue::NonExistence),
                 ordinal: Some(Ordinal::unavailable()),
-                content_hash: None,
             });
         }
         let resp = self
@@ -170,7 +142,6 @@ impl SourceExecutor for Executor {
                 return Ok(PartialSourceRowData {
                     value: Some(SourceValue::NonExistence),
                     ordinal: Some(Ordinal::unavailable()),
-                    content_hash: None,
                 });
             }
             r => r?,
@@ -180,33 +151,17 @@ impl SourceExecutor for Executor {
         } else {
             None
         };
-        
-        let (value, content_hash) = if options.include_value || options.include_content_hash {
+        let value = if options.include_value {
             let bytes = obj.body.collect().await?.into_bytes();
-            let content_hash = if options.include_content_hash {
-                Some(Fingerprinter::default().with(&bytes)?.into_fingerprint())
+            Some(SourceValue::Existence(if self.binary {
+                fields_value!(bytes.to_vec())
             } else {
-                None
-            };
-            let value = if options.include_value {
-                Some(SourceValue::Existence(if self.binary {
-                    fields_value!(bytes.to_vec())
-                } else {
-                    fields_value!(String::from_utf8_lossy(&bytes).to_string())
-                }))
-            } else {
-                None
-            };
-            (value, content_hash)
+                fields_value!(String::from_utf8_lossy(&bytes).to_string())
+            }))
         } else {
-            (None, None)
+            None
         };
-        
-        Ok(PartialSourceRowData { 
-            value, 
-            ordinal,
-            content_hash,
-        })
+        Ok(PartialSourceRowData { value, ordinal })
     }
 
     async fn change_stream(

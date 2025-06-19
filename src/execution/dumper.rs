@@ -1,6 +1,6 @@
 use anyhow::Result;
-use futures::future::try_join_all;
 use futures::StreamExt;
+use futures::future::try_join_all;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use serde::ser::SerializeSeq;
@@ -172,7 +172,6 @@ impl<'a> Dumper<'a> {
 
         let mut rows_stream = import_op.executor.list(&SourceExecutorListOptions {
             include_ordinal: false,
-            include_content_hash: false,
         });
         while let Some(rows) = rows_stream.next().await {
             for row in rows?.into_iter() {

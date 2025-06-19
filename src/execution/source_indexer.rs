@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use futures::future::Ready;
 use sqlx::PgPool;
-use std::collections::{hash_map, HashMap};
+use std::collections::{HashMap, hash_map};
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use super::{
@@ -107,7 +107,6 @@ impl SourceIndexingContext {
                         &interface::SourceExecutorGetOptions {
                             include_value: true,
                             include_ordinal: true,
-                            include_content_hash: true,
                         },
                     )
                     .await?
@@ -236,7 +235,6 @@ impl SourceIndexingContext {
             .executor
             .list(&interface::SourceExecutorListOptions {
                 include_ordinal: true,
-                include_content_hash: true,
             });
         let mut join_set = JoinSet::new();
         let scan_generation = {
@@ -251,7 +249,7 @@ impl SourceIndexingContext {
                     SourceVersion::from_current_with_hash(
                         row.ordinal
                             .ok_or_else(|| anyhow::anyhow!("ordinal is not available"))?,
-                        row.content_hash,
+                        None, // Content hash will be computed in core logic
                     ),
                     update_stats,
                     pool,
@@ -284,7 +282,6 @@ impl SourceIndexingContext {
                 .then(|| interface::SourceData {
                     value: interface::SourceValue::NonExistence,
                     ordinal: source_ordinal,
-                    content_hash: None,
                 });
             join_set.spawn(self.clone().process_source_key(
                 key,

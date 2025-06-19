@@ -3,7 +3,7 @@ use std::time::SystemTime;
 use crate::base::{schema::*, spec::IndexOptions, value::*};
 use crate::prelude::*;
 use crate::setup;
-use crate::utils::fingerprint::Fingerprint;
+
 use chrono::TimeZone;
 use serde::Serialize;
 
@@ -52,7 +52,6 @@ impl<TZ: TimeZone> TryFrom<chrono::DateTime<TZ>> for Ordinal {
 pub struct PartialSourceRowMetadata {
     pub key: KeyValue,
     pub ordinal: Option<Ordinal>,
-    pub content_hash: Option<Fingerprint>,
 }
 
 #[derive(Debug)]
@@ -84,7 +83,6 @@ impl SourceValue {
 pub struct SourceData {
     pub value: SourceValue,
     pub ordinal: Ordinal,
-    pub content_hash: Option<Fingerprint>,
 }
 
 pub struct SourceChange {
@@ -102,25 +100,18 @@ pub struct SourceChangeMessage {
 #[derive(Debug, Default)]
 pub struct SourceExecutorListOptions {
     pub include_ordinal: bool,
-    /// Include content hash for change detection.
-    /// When enabled, sources should compute and return content hashes.
-    pub include_content_hash: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct SourceExecutorGetOptions {
     pub include_value: bool,
     pub include_ordinal: bool,
-    /// Include content hash for change detection.
-    pub include_content_hash: bool,
 }
 
 #[derive(Debug)]
 pub struct PartialSourceRowData {
     pub value: Option<SourceValue>,
     pub ordinal: Option<Ordinal>,
-    /// Content hash for detecting actual content changes.
-    pub content_hash: Option<Fingerprint>,
 }
 
 impl TryFrom<PartialSourceRowData> for SourceData {
@@ -134,7 +125,6 @@ impl TryFrom<PartialSourceRowData> for SourceData {
             ordinal: data
                 .ordinal
                 .ok_or_else(|| anyhow::anyhow!("PartialSourceRowData.ordinal is None"))?,
-            content_hash: data.content_hash,
         })
     }
 }

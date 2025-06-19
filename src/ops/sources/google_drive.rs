@@ -11,7 +11,6 @@ use phf::phf_map;
 
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
-use crate::utils::fingerprint::Fingerprinter;
 
 struct ExportMimeType {
     text: &'static str,
@@ -116,7 +115,7 @@ impl Executor {
         file: File,
         new_folder_ids: &mut Vec<Arc<str>>,
         seen_ids: &mut HashSet<Arc<str>>,
-        options: &SourceExecutorListOptions,
+        _options: &SourceExecutorListOptions,
     ) -> Result<Option<PartialSourceRowMetadata>> {
         if file.trashed == Some(true) {
             return Ok(None);
@@ -135,19 +134,9 @@ impl Executor {
             new_folder_ids.push(id);
             None
         } else if is_supported_file_type(&mime_type) {
-            let content_hash = if options.include_content_hash {
-                // For Google Drive, we would need to download the file to compute content hash
-                // This is expensive during listing, so we'll compute it lazily in get_value
-                // For now, we'll use the file's modifiedTime as a proxy
-                None
-            } else {
-                None
-            };
-            
             Some(PartialSourceRowMetadata {
                 key: KeyValue::Str(id),
                 ordinal: file.modified_time.map(|t| t.try_into()).transpose()?,
-                content_hash,
             })
         } else {
             None
@@ -357,7 +346,6 @@ impl SourceExecutor for Executor {
                 return Ok(PartialSourceRowData {
                     value: Some(SourceValue::NonExistence),
                     ordinal: Some(Ordinal::unavailable()),
-                    content_hash: None,
                 });
             }
         };
@@ -366,8 +354,8 @@ impl SourceExecutor for Executor {
         } else {
             None
         };
-        
-        let (value, content_hash) = if options.include_value || options.include_content_hash {
+
+        let value = if options.include_value {
             let type_n_body = if let Some(export_mime_type) = file
                 .mime_type
                 .as_ref()
@@ -397,48 +385,30 @@ impl SourceExecutor for Executor {
                     .or_not_found()?
                     .map(|(resp, _)| (file.mime_type, resp.into_body()))
             };
-            
+
             match type_n_body {
                 Some((mime_type, resp_body)) => {
                     let content = resp_body.collect().await?;
                     let content_bytes = content.to_bytes();
-                    
-                    let content_hash = if options.include_content_hash {
-                        Some(Fingerprinter::default().with(&content_bytes)?.into_fingerprint())
-                    } else {
-                        None
-                    };
-                    
-                    let value = if options.include_value {
-                        let fields = vec![
-                            file.name.unwrap_or_default().into(),
-                            mime_type.into(),
-                            if self.binary {
-                                content_bytes.to_vec().into()
-                            } else {
-                                String::from_utf8_lossy(&content_bytes)
-                                    .to_string()
-                                    .into()
-                            },
-                        ];
-                        Some(SourceValue::Existence(FieldValues { fields }))
-                    } else {
-                        None
-                    };
-                    
-                    (value, content_hash)
+
+                    let fields = vec![
+                        file.name.unwrap_or_default().into(),
+                        mime_type.into(),
+                        if self.binary {
+                            content_bytes.to_vec().into()
+                        } else {
+                            String::from_utf8_lossy(&content_bytes).to_string().into()
+                        },
+                    ];
+                    Some(SourceValue::Existence(FieldValues { fields }))
                 }
-                None => (Some(SourceValue::NonExistence), None),
+                None => Some(SourceValue::NonExistence),
             }
         } else {
-            (None, None)
+            None
         };
-        
-        Ok(PartialSourceRowData { 
-            value, 
-            ordinal,
-            content_hash,
-        })
+
+        Ok(PartialSourceRowData { value, ordinal })
     }
 
     async fn change_stream(
@@ -479,10 +449,6 @@ impl SourceFactoryBase for Factory {
     ) -> Result<EnrichedValueType> {
         let mut struct_schema = StructSchema::default();
         let mut schema_builder = StructSchemaBuilder::new(&mut struct_schema);
-        schema_builder.add_field(FieldSchema::new(
-            "file_id",
-            make_output_type(BasicValueType::Str),
-        ));
         let filename_field = schema_builder.add_field(FieldSchema::new(
             "filename",
             make_output_type(BasicValueType::Str),
