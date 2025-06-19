@@ -83,7 +83,7 @@ pub struct SourceTrackingInfoForProcessing {
 
     pub processed_source_ordinal: Option<i64>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
-    /// Content hash of the processed source for change detection
+    #[allow(dead_code)]
     pub processed_source_content_hash: Option<Vec<u8>>,
 }
 
@@ -113,6 +113,7 @@ pub struct SourceTrackingInfoForPrecommit {
 
     pub processed_source_ordinal: Option<i64>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
+    #[allow(dead_code)]
     pub processed_source_content_hash: Option<Vec<u8>>,
     pub process_ordinal: Option<i64>,
     pub target_keys: Option<sqlx::types::Json<TrackedTargetKeyForSource>>,
@@ -235,6 +236,41 @@ pub async fn commit_source_tracking_info(
     Ok(())
 }
 
+pub async fn update_source_ordinal_and_fingerprints_only(
+    source_id: i32,
+    source_key_json: &serde_json::Value,
+    processed_source_ordinal: Option<i64>,
+    logic_fingerprint: &[u8],
+    processed_source_content_hash: Option<&[u8]>,
+    process_ordinal: i64,
+    process_time_micros: i64,
+    db_setup: &TrackingTableSetupState,
+    db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
+) -> Result<()> {
+    let query_str = format!(
+        "UPDATE {} SET \
+         max_process_ordinal = GREATEST(max_process_ordinal, $3), \
+         processed_source_ordinal = $4, \
+         process_logic_fingerprint = $5, \
+         processed_source_content_hash = $6, \
+         process_ordinal = $3, \
+         process_time_micros = $7 \
+         WHERE source_id = $1 AND source_key = $2",
+        db_setup.table_name
+    );
+    sqlx::query(&query_str)
+        .bind(source_id) // $1
+        .bind(source_key_json) // $2
+        .bind(process_ordinal) // $3
+        .bind(processed_source_ordinal) // $4
+        .bind(logic_fingerprint) // $5
+        .bind(processed_source_content_hash) // $6
+        .bind(process_time_micros) // $7
+        .execute(db_executor)
+        .await?;
+    Ok(())
+}
+
 pub async fn delete_source_tracking_info(
     source_id: i32,
     source_key_json: &serde_json::Value,
@@ -258,7 +294,6 @@ pub struct TrackedSourceKeyMetadata {
     pub source_key: serde_json::Value,
     pub processed_source_ordinal: Option<i64>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
-    pub processed_source_content_hash: Option<Vec<u8>>,
 }
 
 pub struct ListTrackedSourceKeyMetadataState {
@@ -279,7 +314,7 @@ impl ListTrackedSourceKeyMetadataState {
         pool: &'a PgPool,
     ) -> impl Stream<Item = Result<TrackedSourceKeyMetadata, sqlx::Error>> + 'a {
         self.query_str = format!(
-            "SELECT source_key, processed_source_ordinal, process_logic_fingerprint, processed_source_content_hash FROM {} WHERE source_id = $1",
+            "SELECT source_key, processed_source_ordinal, process_logic_fingerprint FROM {} WHERE source_id = $1",
             db_setup.table_name
         );
         sqlx::query_as(&self.query_str).bind(source_id).fetch(pool)

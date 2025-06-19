@@ -3,7 +3,6 @@ use std::time::SystemTime;
 use crate::base::{schema::*, spec::IndexOptions, value::*};
 use crate::prelude::*;
 use crate::setup;
-
 use chrono::TimeZone;
 use serde::Serialize;
 
@@ -104,8 +103,8 @@ pub struct SourceExecutorListOptions {
 
 #[derive(Debug, Default)]
 pub struct SourceExecutorGetOptions {
-    pub include_value: bool,
     pub include_ordinal: bool,
+    pub include_value: bool,
 }
 
 #[derive(Debug)]
@@ -118,17 +117,16 @@ impl TryFrom<PartialSourceRowData> for SourceData {
     type Error = anyhow::Error;
 
     fn try_from(data: PartialSourceRowData) -> Result<Self, Self::Error> {
-        Ok(SourceData {
+        Ok(Self {
             value: data
                 .value
-                .ok_or_else(|| anyhow::anyhow!("PartialSourceRowData.value is None"))?,
+                .ok_or_else(|| anyhow::anyhow!("value is missing"))?,
             ordinal: data
                 .ordinal
-                .ok_or_else(|| anyhow::anyhow!("PartialSourceRowData.ordinal is None"))?,
+                .ok_or_else(|| anyhow::anyhow!("ordinal is missing"))?,
         })
     }
 }
-
 #[async_trait]
 pub trait SourceExecutor: Send + Sync {
     /// Get the list of keys for the source.
