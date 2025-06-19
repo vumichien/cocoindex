@@ -592,11 +592,16 @@ pub async fn update_source_row(
             let stored_info = evaluation_memory.into_stored()?;
 
             // Content hash optimization: if content hasn't changed, use fast path
-            if let (Some(existing_info), Some(existing_content_hash)) =
-                (&memoization_info, &stored_info.content_hash)
-            {
-                if existing_info.content_hash.as_ref() == Some(existing_content_hash) {
-                    // Content unchanged - use fast path to update only tracking info
+            // Verify ordinal allows processing
+            if let (Some(existing_version), Some(existing_info), Some(existing_content_hash)) = (
+                &existing_version,
+                &memoization_info,
+                &stored_info.content_hash,
+            ) {
+                if !existing_version.should_skip(source_version, None)
+                    && existing_info.content_hash.as_ref() == Some(existing_content_hash)
+                {
+                    // Ordinal allows processing AND content unchanged - use fast path
                     db_tracking::update_source_ordinal_and_fingerprints_only(
                         src_eval_ctx.import_op.source_id,
                         &source_key_json,
