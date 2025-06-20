@@ -6,7 +6,6 @@ use std::path::Path;
 use std::{path::PathBuf, sync::Arc};
 
 use crate::base::field_attrs;
-
 use crate::{fields_value, ops::sdk::*};
 
 #[derive(Debug, Deserialize)]
@@ -69,7 +68,6 @@ impl SourceExecutor for Executor {
                         } else {
                             None
                         };
-
                         if let Some(relative_path) = relative_path.to_str() {
                             yield vec![PartialSourceRowMetadata {
                                 key: KeyValue::Str(relative_path.into()),
@@ -103,26 +101,24 @@ impl SourceExecutor for Executor {
         } else {
             None
         };
-
         let value = if options.include_value {
-            match std::fs::read(&path) {
+            match std::fs::read(path) {
                 Ok(content) => {
-                    let content_value = if self.binary {
+                    let content = if self.binary {
                         fields_value!(content)
                     } else {
                         fields_value!(String::from_utf8_lossy(&content).to_string())
                     };
-                    Some(SourceValue::Existence(content_value))
+                    Some(SourceValue::Existence(content))
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     Some(SourceValue::NonExistence)
                 }
-                Err(e) => return Err(e.into()),
+                Err(e) => Err(e)?,
             }
         } else {
             None
         };
-
         Ok(PartialSourceRowData { value, ordinal })
     }
 }

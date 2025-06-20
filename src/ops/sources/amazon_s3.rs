@@ -1,5 +1,5 @@
 use crate::fields_value;
-use async_stream::{stream, try_stream};
+use async_stream::try_stream;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use globset::{Glob, GlobSet, GlobSetBuilder};

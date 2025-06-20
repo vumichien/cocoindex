@@ -115,7 +115,6 @@ impl Executor {
         file: File,
         new_folder_ids: &mut Vec<Arc<str>>,
         seen_ids: &mut HashSet<Arc<str>>,
-        _options: &SourceExecutorListOptions,
     ) -> Result<Option<PartialSourceRowMetadata>> {
         if file.trashed == Some(true) {
             return Ok(None);
@@ -306,7 +305,7 @@ impl SourceExecutor for Executor {
                         .list_files(&folder_id, &fields, &mut next_page_token)
                         .await?;
                     for file in files {
-                        curr_rows.extend(self.visit_file(file, &mut new_folder_ids, &mut seen_ids, options)?);
+                        curr_rows.extend(self.visit_file(file, &mut new_folder_ids, &mut seen_ids)?);
                     }
                     if !curr_rows.is_empty() {
                         yield curr_rows;
@@ -354,60 +353,54 @@ impl SourceExecutor for Executor {
         } else {
             None
         };
-
-        let value = if options.include_value {
-            let type_n_body = if let Some(export_mime_type) = file
-                .mime_type
-                .as_ref()
-                .and_then(|mime_type| EXPORT_MIME_TYPES.get(mime_type.as_str()))
-            {
-                let target_mime_type = if self.binary {
-                    export_mime_type.binary
-                } else {
-                    export_mime_type.text
-                };
-                self.drive_hub
-                    .files()
-                    .export(file_id, target_mime_type)
-                    .add_scope(Scope::Readonly)
-                    .doit()
-                    .await
-                    .or_not_found()?
-                    .map(|content| (Some(target_mime_type.to_string()), content.into_body()))
+        let type_n_body = if let Some(export_mime_type) = file
+            .mime_type
+            .as_ref()
+            .and_then(|mime_type| EXPORT_MIME_TYPES.get(mime_type.as_str()))
+        {
+            let target_mime_type = if self.binary {
+                export_mime_type.binary
             } else {
-                self.drive_hub
-                    .files()
-                    .get(file_id)
-                    .add_scope(Scope::Readonly)
-                    .param("alt", "media")
-                    .doit()
-                    .await
-                    .or_not_found()?
-                    .map(|(resp, _)| (file.mime_type, resp.into_body()))
+                export_mime_type.text
             };
-
-            match type_n_body {
-                Some((mime_type, resp_body)) => {
-                    let content = resp_body.collect().await?;
-                    let content_bytes = content.to_bytes();
-
-                    let fields = vec![
-                        file.name.unwrap_or_default().into(),
-                        mime_type.into(),
-                        if self.binary {
-                            content_bytes.to_vec().into()
-                        } else {
-                            String::from_utf8_lossy(&content_bytes).to_string().into()
-                        },
-                    ];
-                    Some(SourceValue::Existence(FieldValues { fields }))
-                }
-                None => Some(SourceValue::NonExistence),
-            }
+            self.drive_hub
+                .files()
+                .export(file_id, target_mime_type)
+                .add_scope(Scope::Readonly)
+                .doit()
+                .await
+                .or_not_found()?
+                .map(|content| (Some(target_mime_type.to_string()), content.into_body()))
         } else {
-            None
+            self.drive_hub
+                .files()
+                .get(file_id)
+                .add_scope(Scope::Readonly)
+                .param("alt", "media")
+                .doit()
+                .await
+                .or_not_found()?
+                .map(|(resp, _)| (file.mime_type, resp.into_body()))
         };
+        let value = match type_n_body {
+            Some((mime_type, resp_body)) => {
+                let content = resp_body.collect().await?;
 
+                let fields = vec![
+                    file.name.unwrap_or_default().into(),
+                    mime_type.into(),
+                    if self.binary {
+                        content.to_bytes().to_vec().into()
+                    } else {
+                        String::from_utf8_lossy(&content.to_bytes())
+                            .to_string()
+                            .into()
+                    },
+                ];
+                Some(SourceValue::Existence(FieldValues { fields }))
+            }
+            None => None,
+        };
         Ok(PartialSourceRowData { value, ordinal })
     }
 
@@ -449,6 +442,10 @@ impl SourceFactoryBase for Factory {
     ) -> Result<EnrichedValueType> {
         let mut struct_schema = StructSchema::default();
         let mut schema_builder = StructSchemaBuilder::new(&mut struct_schema);
+        schema_builder.add_field(FieldSchema::new(
+            "file_id",
+            make_output_type(BasicValueType::Str),
+        ));
         let filename_field = schema_builder.add_field(FieldSchema::new(
             "filename",
             make_output_type(BasicValueType::Str),
