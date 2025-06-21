@@ -597,26 +597,16 @@ pub async fn update_source_row(
         None => (None, None, false, None),
     };
 
-    let (output, stored_mem_info) = match source_value {
-        interface::SourceValue::Existence(source_value) => {
-            let evaluation_memory = EvaluationMemory::new(
-                process_time,
-                memoization_info.clone(),
-                EvaluationMemoryOptions {
-                    enable_cache: true,
-                    evaluation_only: false,
-                },
-            );
-            let output =
-                evaluate_source_entry(src_eval_ctx, source_value, &evaluation_memory).await?;
-            let stored_info = evaluation_memory.into_stored()?;
+    if let interface::SourceValue::Existence(ref source_value) = source_value {
+        if let Some(existing_info) = &memoization_info {
+            if can_use_content_hash_optimization {
+                // Compute content hash directly from source data (no expensive evaluation needed)
+                let current_content_hash = Fingerprinter::default()
+                    .with(source_value)?
+                    .into_fingerprint();
 
-            if let (Some(existing_info), Some(existing_content_hash)) =
-                (&memoization_info, &stored_info.content_hash)
-            {
-                if can_use_content_hash_optimization
-                    && existing_info.content_hash.as_ref() == Some(existing_content_hash)
-                {
+                if existing_info.content_hash.as_ref() == Some(&current_content_hash) {
+                    // Content hash matches - try optimization
                     let mut txn = pool.begin().await?;
 
                     let current_tracking_info =
@@ -642,24 +632,18 @@ pub async fn update_source_row(
                         let original_process_ordinal = original_tracking_info
                             .as_ref()
                             .and_then(|info| info.process_ordinal);
-                        if current_info.process_ordinal != original_process_ordinal {
-                        } else {
-                            let query_str = format!(
-                                "UPDATE {} SET \
-                                 processed_source_ordinal = $3, \
-                                 process_logic_fingerprint = $4, \
-                                 process_time_micros = $5 \
-                                 WHERE source_id = $1 AND source_key = $2",
-                                src_eval_ctx.plan.tracking_table_setup.table_name
-                            );
-                            sqlx::query(&query_str)
-                                .bind(src_eval_ctx.import_op.source_id) // $1
-                                .bind(&source_key_json) // $2
-                                .bind(source_version.ordinal.0) // $3
-                                .bind(&src_eval_ctx.plan.logic_fingerprint.0) // $4
-                                .bind(process_time.timestamp_micros()) // $5
-                                .execute(&mut *txn)
-                                .await?;
+                        if current_info.process_ordinal == original_process_ordinal {
+                            // Safe to apply optimization - just update tracking table
+                            db_tracking::update_source_tracking_ordinal_and_logic(
+                                src_eval_ctx.import_op.source_id,
+                                &source_key_json,
+                                source_version.ordinal.0,
+                                &src_eval_ctx.plan.logic_fingerprint.0,
+                                process_time.timestamp_micros(),
+                                &src_eval_ctx.plan.tracking_table_setup,
+                                &mut *txn,
+                            )
+                            .await?;
 
                             txn.commit().await?;
                             update_stats.num_no_change.inc(1);
@@ -668,6 +652,29 @@ pub async fn update_source_row(
                     }
                 }
             }
+        }
+    }
+
+    let (output, stored_mem_info) = match source_value {
+        interface::SourceValue::Existence(source_value) => {
+            let mut evaluation_memory = EvaluationMemory::new(
+                process_time,
+                memoization_info.clone(),
+                EvaluationMemoryOptions {
+                    enable_cache: true,
+                    evaluation_only: false,
+                },
+            );
+
+            // Compute and set content hash from source data
+            let content_hash = Fingerprinter::default()
+                .with(&source_value)?
+                .into_fingerprint();
+            evaluation_memory.set_content_hash(content_hash);
+
+            let output =
+                evaluate_source_entry(src_eval_ctx, source_value, &evaluation_memory).await?;
+            let stored_info = evaluation_memory.into_stored()?;
 
             (Some(output), stored_info)
         }
@@ -1070,5 +1077,55 @@ mod tests {
 
         // The newer version should cause skipping
         assert!(newer_concurrent_version.should_skip(&target_version, None));
+    }
+
+    #[test]
+    fn test_content_hash_computation() {
+        use crate::base::value::{BasicValue, FieldValues, Value};
+        use crate::utils::fingerprint::Fingerprinter;
+
+        // Test that content hash is computed correctly from source data
+        let source_data1 = FieldValues {
+            fields: vec![
+                Value::Basic(BasicValue::Str("Hello".into())),
+                Value::Basic(BasicValue::Int64(42)),
+            ],
+        };
+
+        let source_data2 = FieldValues {
+            fields: vec![
+                Value::Basic(BasicValue::Str("Hello".into())),
+                Value::Basic(BasicValue::Int64(42)),
+            ],
+        };
+
+        let source_data3 = FieldValues {
+            fields: vec![
+                Value::Basic(BasicValue::Str("World".into())), // Different content
+                Value::Basic(BasicValue::Int64(42)),
+            ],
+        };
+
+        let hash1 = Fingerprinter::default()
+            .with(&source_data1)
+            .unwrap()
+            .into_fingerprint();
+
+        let hash2 = Fingerprinter::default()
+            .with(&source_data2)
+            .unwrap()
+            .into_fingerprint();
+
+        let hash3 = Fingerprinter::default()
+            .with(&source_data3)
+            .unwrap()
+            .into_fingerprint();
+
+        // Same content should produce same hash
+        assert_eq!(hash1, hash2);
+
+        // Different content should produce different hash
+        assert_ne!(hash1, hash3);
+        assert_ne!(hash2, hash3);
     }
 }

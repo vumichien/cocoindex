@@ -306,3 +306,31 @@ pub async fn read_source_last_processed_info(
         .await?;
     Ok(last_processed_info)
 }
+
+pub async fn update_source_tracking_ordinal_and_logic(
+    source_id: i32,
+    source_key_json: &serde_json::Value,
+    processed_source_ordinal: Option<i64>,
+    process_logic_fingerprint: &[u8],
+    process_time_micros: i64,
+    db_setup: &TrackingTableSetupState,
+    db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
+) -> Result<()> {
+    let query_str = format!(
+        "UPDATE {} SET \
+         processed_source_ordinal = $3, \
+         process_logic_fingerprint = $4, \
+         process_time_micros = $5 \
+         WHERE source_id = $1 AND source_key = $2",
+        db_setup.table_name
+    );
+    sqlx::query(&query_str)
+        .bind(source_id) // $1
+        .bind(source_key_json) // $2
+        .bind(processed_source_ordinal) // $3
+        .bind(process_logic_fingerprint) // $4
+        .bind(process_time_micros) // $5
+        .execute(db_executor)
+        .await?;
+    Ok(())
+}

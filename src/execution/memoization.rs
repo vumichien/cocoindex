@@ -82,6 +82,7 @@ pub struct EvaluationMemory {
     cache: Option<Mutex<HashMap<Fingerprint, CacheEntry>>>,
     uuids: Mutex<HashMap<Fingerprint, UuidEntry>>,
     evaluation_only: bool,
+    content_hash: Option<Fingerprint>,
 }
 
 impl EvaluationMemory {
@@ -123,6 +124,7 @@ impl EvaluationMemory {
                     .collect(),
             ),
             evaluation_only: options.evaluation_only,
+            content_hash: None,
         }
     }
 
@@ -162,7 +164,7 @@ impl EvaluationMemory {
         Ok(StoredMemoizationInfo {
             cache,
             uuids,
-            content_hash: None,
+            content_hash: self.content_hash,
         })
     }
 
@@ -208,6 +210,10 @@ impl EvaluationMemory {
             }
         };
         Ok(Some(result))
+    }
+
+    pub fn set_content_hash(&mut self, content_hash: Fingerprint) {
+        self.content_hash = Some(content_hash);
     }
 
     pub fn next_uuid(&self, key: Fingerprint) -> Result<uuid::Uuid> {
