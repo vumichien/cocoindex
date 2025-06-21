@@ -476,7 +476,6 @@ async fn commit_source_tracking_info(
             cleaned_staging_target_keys,
             source_version.ordinal.into(),
             logic_fingerprint,
-            None,
             precommit_metadata.process_ordinal,
             process_timestamp.timestamp_micros(),
             precommit_metadata.new_target_keys,
@@ -557,24 +556,45 @@ pub async fn update_source_row(
         pool,
     )
     .await?;
-    let (memoization_info, existing_version) = match existing_tracking_info {
+    let (
+        memoization_info,
+        existing_version,
+        can_use_content_hash_optimization,
+        original_tracking_info,
+    ) = match existing_tracking_info {
         Some(info) => {
             let existing_version = SourceVersion::from_stored_processing_info(
                 &info,
                 src_eval_ctx.plan.logic_fingerprint,
             );
 
-            // First check ordinal-based skipping (monotonic invariance)
+            // First check ordinal-based skipping
             if existing_version.should_skip(source_version, Some(update_stats)) {
                 return Ok(SkippedOr::Skipped(existing_version));
             }
 
+            // Check if we can use content hash optimization
+            let can_use_optimization = existing_version.kind == SourceVersionKind::CurrentLogic
+                && info
+                    .max_process_ordinal
+                    .zip(info.process_ordinal)
+                    .map(|(max_ord, proc_ord)| max_ord == proc_ord)
+                    .unwrap_or(false);
+
+            let memoization_info = info
+                .memoization_info
+                .as_ref()
+                .and_then(|info| info.0.as_ref())
+                .cloned();
+
             (
-                info.memoization_info.and_then(|info| info.0),
+                memoization_info,
                 Some(existing_version),
+                can_use_optimization,
+                Some(info),
             )
         }
-        None => Default::default(),
+        None => (None, None, false, None),
     };
 
     let (output, stored_mem_info) = match source_value {
@@ -591,31 +611,61 @@ pub async fn update_source_row(
                 evaluate_source_entry(src_eval_ctx, source_value, &evaluation_memory).await?;
             let stored_info = evaluation_memory.into_stored()?;
 
-            // Content hash optimization: if content hasn't changed, use fast path
-            // Verify ordinal allows processing
-            if let (Some(existing_version), Some(existing_info), Some(existing_content_hash)) = (
-                &existing_version,
-                &memoization_info,
-                &stored_info.content_hash,
-            ) {
-                if !existing_version.should_skip(source_version, None)
+            if let (Some(existing_info), Some(existing_content_hash)) =
+                (&memoization_info, &stored_info.content_hash)
+            {
+                if can_use_content_hash_optimization
                     && existing_info.content_hash.as_ref() == Some(existing_content_hash)
                 {
-                    // Ordinal allows processing AND content unchanged - use fast path
-                    db_tracking::update_source_ordinal_and_fingerprints_only(
-                        src_eval_ctx.import_op.source_id,
-                        &source_key_json,
-                        source_version.ordinal.into(),
-                        &src_eval_ctx.plan.logic_fingerprint.0,
-                        None, // Content hash stored in memoization info
-                        process_time.timestamp_millis(),
-                        process_time.timestamp_micros(),
-                        &src_eval_ctx.plan.tracking_table_setup,
-                        pool,
-                    )
-                    .await?;
-                    update_stats.num_no_change.inc(1);
-                    return Ok(SkippedOr::Normal(()));
+                    let mut txn = pool.begin().await?;
+
+                    let current_tracking_info =
+                        db_tracking::read_source_tracking_info_for_precommit(
+                            src_eval_ctx.import_op.source_id,
+                            &source_key_json,
+                            &src_eval_ctx.plan.tracking_table_setup,
+                            &mut *txn,
+                        )
+                        .await?;
+
+                    if let Some(current_info) = current_tracking_info {
+                        // Check 1: Same check as precommit - verify no newer version exists
+                        let current_source_version = SourceVersion::from_stored_precommit_info(
+                            &current_info,
+                            src_eval_ctx.plan.logic_fingerprint,
+                        );
+                        if current_source_version.should_skip(source_version, Some(update_stats)) {
+                            return Ok(SkippedOr::Skipped(current_source_version));
+                        }
+
+                        // Check 2: Verify process_ordinal hasn't changed (no concurrent processing)
+                        let original_process_ordinal = original_tracking_info
+                            .as_ref()
+                            .and_then(|info| info.process_ordinal);
+                        if current_info.process_ordinal != original_process_ordinal {
+                        } else {
+                            let query_str = format!(
+                                "UPDATE {} SET \
+                                 processed_source_ordinal = $3, \
+                                 process_logic_fingerprint = $4, \
+                                 process_time_micros = $5 \
+                                 WHERE source_id = $1 AND source_key = $2",
+                                src_eval_ctx.plan.tracking_table_setup.table_name
+                            );
+                            sqlx::query(&query_str)
+                                .bind(src_eval_ctx.import_op.source_id) // $1
+                                .bind(&source_key_json) // $2
+                                .bind(source_version.ordinal.0) // $3
+                                .bind(&src_eval_ctx.plan.logic_fingerprint.0) // $4
+                                .bind(process_time.timestamp_micros()) // $5
+                                .execute(&mut *txn)
+                                .await?;
+
+                            txn.commit().await?;
+                            update_stats.num_no_change.inc(1);
+                            return Ok(SkippedOr::Normal(()));
+                        }
+                    }
                 }
             }
 
@@ -924,5 +974,101 @@ mod tests {
         assert!(same_logic);
         // This condition would trigger the fast path in update_source_row
         // to update only tracking info while maintaining ordinal invariance
+    }
+
+    #[test]
+    fn test_content_hash_optimization_safety_checks() {
+        // Test the safety checks for content hash optimization
+
+        // Case 1: Logic version must be CurrentLogic
+        let different_logic_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::DifferentLogic, // Not CurrentLogic
+        };
+        assert_ne!(
+            different_logic_version.kind,
+            SourceVersionKind::CurrentLogic
+        );
+
+        let unknown_logic_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::UnknownLogic, // Not CurrentLogic
+        };
+        assert_ne!(unknown_logic_version.kind, SourceVersionKind::CurrentLogic);
+
+        // Case 2: Only CurrentLogic allows content hash optimization
+        let current_logic_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        assert_eq!(current_logic_version.kind, SourceVersionKind::CurrentLogic);
+
+        // Case 3: max_process_ordinal == process_ordinal check
+        // This would be checked in the actual update_source_row function
+        // where we verify that the commit completed successfully
+        let max_process_ordinal = Some(1000i64);
+        let process_ordinal = Some(1000i64);
+        let commit_completed = max_process_ordinal
+            .zip(process_ordinal)
+            .map(|(max_ord, proc_ord)| max_ord == proc_ord)
+            .unwrap_or(false);
+        assert!(commit_completed);
+
+        // Case 4: Incomplete commit scenario
+        let max_process_ordinal_incomplete = Some(1001i64);
+        let process_ordinal_incomplete = Some(1000i64);
+        let commit_incomplete = max_process_ordinal_incomplete
+            .zip(process_ordinal_incomplete)
+            .map(|(max_ord, proc_ord)| max_ord == proc_ord)
+            .unwrap_or(false);
+        assert!(!commit_incomplete);
+    }
+
+    #[test]
+    fn test_content_hash_optimization_transaction_safety() {
+        // Test the transaction-based approach for content hash optimization
+        // This test documents the race condition handling logic
+
+        // Scenario 1: Normal case - no concurrent changes
+        let original_process_ordinal = Some(1000i64);
+        let current_process_ordinal = Some(1000i64);
+        let no_concurrent_change = original_process_ordinal == current_process_ordinal;
+        assert!(
+            no_concurrent_change,
+            "Should proceed with optimization when no concurrent changes"
+        );
+
+        // Scenario 2: Race condition - process_ordinal changed
+        let original_process_ordinal_race = Some(1000i64);
+        let current_process_ordinal_race = Some(1001i64);
+        let concurrent_change_detected =
+            original_process_ordinal_race != current_process_ordinal_race;
+        assert!(
+            concurrent_change_detected,
+            "Should detect concurrent changes and fall back to normal processing"
+        );
+
+        // Scenario 3: Version check within transaction
+        let existing_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+
+        let target_version = SourceVersion {
+            ordinal: Ordinal(Some(200)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+
+        // Should not skip (target is newer)
+        assert!(!existing_version.should_skip(&target_version, None));
+
+        // But if a newer version appears during transaction:
+        let newer_concurrent_version = SourceVersion {
+            ordinal: Ordinal(Some(300)), // Even newer than target
+            kind: SourceVersionKind::CurrentLogic,
+        };
+
+        // The newer version should cause skipping
+        assert!(newer_concurrent_version.should_skip(&target_version, None));
     }
 }

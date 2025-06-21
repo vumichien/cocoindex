@@ -11,7 +11,7 @@ pub fn default_tracking_table_name(flow_name: &str) -> String {
     )
 }
 
-pub const CURRENT_TRACKING_TABLE_VERSION: i32 = 2;
+pub const CURRENT_TRACKING_TABLE_VERSION: i32 = 1;
 
 async fn upgrade_tracking_table(
     pool: &PgPool,
@@ -42,14 +42,7 @@ async fn upgrade_tracking_table(
         );
         sqlx::query(&query).execute(pool).await?;
     }
-    
-    if existing_version_id < 2 && target_version_id >= 2 {
-        let query = format!(
-            "ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS processed_source_content_hash BYTEA;",
-        );
-        sqlx::query(&query).execute(pool).await?;
-    }
-    
+
     Ok(())
 }
 
@@ -162,8 +155,6 @@ impl ResourceSetupStatus for TrackingTableSetupStatus {
             (None, None) => SetupChangeType::NoChange,
         }
     }
-
-
 }
 
 impl TrackingTableSetupStatus {
