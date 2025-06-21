@@ -3,6 +3,7 @@ use crate::prelude::*;
 use crate::utils::immutable::RefList;
 use schemars::schema::{
     ArrayValidation, InstanceType, ObjectValidation, Schema, SchemaObject, SingleOrVec,
+    SubschemaValidation,
 };
 use std::fmt::Write;
 
@@ -173,6 +174,17 @@ impl JsonSchemaBuilder {
                     ))),
                     min_items: s.dimension.and_then(|d| u32::try_from(d).ok()),
                     max_items: s.dimension.and_then(|d| u32::try_from(d).ok()),
+                    ..Default::default()
+                }));
+            }
+            schema::BasicValueType::Union(s) => {
+                schema.subschemas = Some(Box::new(SubschemaValidation {
+                    one_of: Some(
+                        s.types
+                            .iter()
+                            .map(|t| Schema::Object(self.for_basic_value_type(t, field_path)))
+                            .collect(),
+                    ),
                     ..Default::default()
                 }));
             }
