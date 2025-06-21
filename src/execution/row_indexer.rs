@@ -634,11 +634,15 @@ pub async fn update_source_row(
                             .and_then(|info| info.process_ordinal);
                         if current_info.process_ordinal == original_process_ordinal {
                             // Safe to apply optimization - just update tracking table
+                            let new_process_ordinal = (current_info.max_process_ordinal + 1)
+                                .max(process_time.timestamp_millis());
+
                             db_tracking::update_source_tracking_ordinal_and_logic(
                                 src_eval_ctx.import_op.source_id,
                                 &source_key_json,
                                 source_version.ordinal.0,
                                 &src_eval_ctx.plan.logic_fingerprint.0,
+                                new_process_ordinal,
                                 process_time.timestamp_micros(),
                                 &src_eval_ctx.plan.tracking_table_setup,
                                 &mut *txn,
