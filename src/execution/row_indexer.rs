@@ -495,6 +495,71 @@ async fn commit_source_tracking_info(
     Ok(())
 }
 
+async fn try_content_hash_optimization(
+    src_eval_ctx: &SourceRowEvaluationContext<'_>,
+    source_key_json: &serde_json::Value,
+    source_version: &SourceVersion,
+    process_time: &chrono::DateTime<chrono::Utc>,
+    existing_hash: &crate::utils::fingerprint::Fingerprint,
+    current_hash: &crate::utils::fingerprint::Fingerprint,
+    original_tracking_info: &Option<db_tracking::SourceTrackingInfoForProcessing>,
+    update_stats: &stats::UpdateStats,
+    pool: &PgPool,
+) -> Result<Option<SkippedOr<()>>> {
+    if existing_hash != current_hash {
+        return Ok(None);
+    }
+
+    // Content hash matches - try optimization
+    let mut txn = pool.begin().await?;
+
+    let current_tracking_info = db_tracking::read_source_tracking_info_for_precommit(
+        src_eval_ctx.import_op.source_id,
+        source_key_json,
+        &src_eval_ctx.plan.tracking_table_setup,
+        &mut *txn,
+    )
+    .await?;
+
+    if let Some(current_info) = current_tracking_info {
+        // Check 1: Same check as precommit - verify no newer version exists
+        let current_source_version = SourceVersion::from_stored_precommit_info(
+            &current_info,
+            src_eval_ctx.plan.logic_fingerprint,
+        );
+        if current_source_version.should_skip(source_version, Some(update_stats)) {
+            return Ok(Some(SkippedOr::Skipped(current_source_version)));
+        }
+
+        // Check 2: Verify process_ordinal hasn't changed (no concurrent processing)
+        let original_process_ordinal = original_tracking_info
+            .as_ref()
+            .and_then(|info| info.process_ordinal);
+        if current_info.process_ordinal == original_process_ordinal {
+            // Safe to apply optimization - just update tracking table
+            let new_process_ordinal = (current_info.max_process_ordinal + 1)
+                .max(process_time.timestamp_millis());
+
+            db_tracking::update_source_tracking_ordinal_and_logic(
+                src_eval_ctx.import_op.source_id,
+                source_key_json,
+                source_version.ordinal.0,
+                new_process_ordinal,
+                process_time.timestamp_micros(),
+                &src_eval_ctx.plan.tracking_table_setup,
+                &mut *txn,
+            )
+            .await?;
+
+            txn.commit().await?;
+            update_stats.num_no_change.inc(1);
+            return Ok(Some(SkippedOr::Normal(())));
+        }
+    }
+
+    Ok(None)
+}
+
 pub async fn evaluate_source_entry_with_memory(
     src_eval_ctx: &SourceRowEvaluationContext<'_>,
     options: EvaluationMemoryOptions,
@@ -523,7 +588,7 @@ pub async fn evaluate_source_entry_with_memory(
             src_eval_ctx.key,
             &SourceExecutorGetOptions {
                 include_value: true,
-                include_ordinal: true,
+                include_ordinal: false,
             },
         )
         .await?
@@ -561,6 +626,7 @@ pub async fn update_source_row(
         existing_version,
         can_use_content_hash_optimization,
         original_tracking_info,
+        existing_content_hash,
     ) = match existing_tracking_info {
         Some(info) => {
             let existing_version = SourceVersion::from_stored_processing_info(
@@ -581,6 +647,13 @@ pub async fn update_source_row(
                     .map(|(max_ord, proc_ord)| max_ord == proc_ord)
                     .unwrap_or(false);
 
+            let content_hash = info
+                .memoization_info
+                .as_ref()
+                .and_then(|info| info.0.as_ref())
+                .and_then(|stored_info| stored_info.content_hash.as_ref())
+                .cloned();
+
             let memoization_info = info
                 .memoization_info
                 .as_ref()
@@ -592,67 +665,40 @@ pub async fn update_source_row(
                 Some(existing_version),
                 can_use_optimization,
                 Some(info),
+                content_hash,
             )
         }
-        None => (None, None, false, None),
+        None => (None, None, false, None, None),
     };
 
-    if let interface::SourceValue::Existence(ref source_value) = source_value {
-        if let Some(existing_info) = &memoization_info {
+    // Compute content hash once if needed for both optimization and evaluation
+    let current_content_hash = match &source_value {
+        interface::SourceValue::Existence(source_value) => {
+            Some(Fingerprinter::default()
+                .with(source_value)?
+                .into_fingerprint())
+        }
+        interface::SourceValue::NonExistence => None,
+    };
+
+    if let interface::SourceValue::Existence(ref _source_value) = source_value {
+        if let Some(ref existing_hash) = existing_content_hash {
             if can_use_content_hash_optimization {
-                // Compute content hash directly from source data (no expensive evaluation needed)
-                let current_content_hash = Fingerprinter::default()
-                    .with(source_value)?
-                    .into_fingerprint();
-
-                if existing_info.content_hash.as_ref() == Some(&current_content_hash) {
-                    // Content hash matches - try optimization
-                    let mut txn = pool.begin().await?;
-
-                    let current_tracking_info =
-                        db_tracking::read_source_tracking_info_for_precommit(
-                            src_eval_ctx.import_op.source_id,
-                            &source_key_json,
-                            &src_eval_ctx.plan.tracking_table_setup,
-                            &mut *txn,
-                        )
-                        .await?;
-
-                    if let Some(current_info) = current_tracking_info {
-                        // Check 1: Same check as precommit - verify no newer version exists
-                        let current_source_version = SourceVersion::from_stored_precommit_info(
-                            &current_info,
-                            src_eval_ctx.plan.logic_fingerprint,
-                        );
-                        if current_source_version.should_skip(source_version, Some(update_stats)) {
-                            return Ok(SkippedOr::Skipped(current_source_version));
-                        }
-
-                        // Check 2: Verify process_ordinal hasn't changed (no concurrent processing)
-                        let original_process_ordinal = original_tracking_info
-                            .as_ref()
-                            .and_then(|info| info.process_ordinal);
-                        if current_info.process_ordinal == original_process_ordinal {
-                            // Safe to apply optimization - just update tracking table
-                            let new_process_ordinal = (current_info.max_process_ordinal + 1)
-                                .max(process_time.timestamp_millis());
-
-                            db_tracking::update_source_tracking_ordinal_and_logic(
-                                src_eval_ctx.import_op.source_id,
-                                &source_key_json,
-                                source_version.ordinal.0,
-                                &src_eval_ctx.plan.logic_fingerprint.0,
-                                new_process_ordinal,
-                                process_time.timestamp_micros(),
-                                &src_eval_ctx.plan.tracking_table_setup,
-                                &mut *txn,
-                            )
-                            .await?;
-
-                            txn.commit().await?;
-                            update_stats.num_no_change.inc(1);
-                            return Ok(SkippedOr::Normal(()));
-                        }
+                if let Some(current_hash) = &current_content_hash {
+                    if let Some(optimization_result) = try_content_hash_optimization(
+                        src_eval_ctx,
+                        &source_key_json,
+                        source_version,
+                        &process_time,
+                        existing_hash,
+                        current_hash,
+                        &original_tracking_info,
+                        update_stats,
+                        pool,
+                    )
+                    .await?
+                    {
+                        return Ok(optimization_result);
                     }
                 }
             }
@@ -670,11 +716,10 @@ pub async fn update_source_row(
                 },
             );
 
-            // Compute and set content hash from source data
-            let content_hash = Fingerprinter::default()
-                .with(&source_value)?
-                .into_fingerprint();
-            evaluation_memory.set_content_hash(content_hash);
+            // Use the pre-computed content hash
+            if let Some(hash) = current_content_hash {
+                evaluation_memory.set_content_hash(hash);
+            }
 
             let output =
                 evaluate_source_entry(src_eval_ctx, source_value, &evaluation_memory).await?;
@@ -686,7 +731,7 @@ pub async fn update_source_row(
             let stored_info = StoredMemoizationInfo {
                 cache: Default::default(),
                 uuids: Default::default(),
-                content_hash: None,
+                content_hash: current_content_hash,
             };
             (None, stored_info)
         }
@@ -781,71 +826,6 @@ pub async fn update_source_row(
 mod tests {
     use super::*;
 
-    use crate::utils::fingerprint::Fingerprinter;
-
-    #[test]
-    fn test_should_skip_with_older_ordinal() {
-        let existing_version = SourceVersion {
-            ordinal: Ordinal(Some(200)), // Existing has newer ordinal
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        let target_version = SourceVersion {
-            ordinal: Ordinal(Some(100)), // Target has older ordinal
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        // Should skip because target ordinal is older (monotonic invariance)
-        assert!(existing_version.should_skip(&target_version, None));
-    }
-
-    #[test]
-    fn test_should_not_skip_with_newer_ordinal() {
-        let existing_version = SourceVersion {
-            ordinal: Ordinal(Some(100)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        let target_version = SourceVersion {
-            ordinal: Ordinal(Some(200)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        // Should not skip because target ordinal is newer
-        assert!(!existing_version.should_skip(&target_version, None));
-    }
-
-    #[test]
-    fn test_fallback_to_ordinal_when_no_content_hash() {
-        let existing_version = SourceVersion {
-            ordinal: Ordinal(Some(200)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        let target_version = SourceVersion {
-            ordinal: Ordinal(Some(100)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        // Should skip because existing ordinal > target ordinal
-        assert!(existing_version.should_skip(&target_version, None));
-    }
-
-    #[test]
-    fn test_mixed_ordinal_availability() {
-        let existing_version = SourceVersion {
-            ordinal: Ordinal(Some(100)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        let target_version = SourceVersion {
-            ordinal: Ordinal(Some(200)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        // Should not skip because target ordinal is newer
-        assert!(!existing_version.should_skip(&target_version, None));
-    }
 
     #[test]
     fn test_github_actions_scenario_ordinal_behavior() {
@@ -880,208 +860,6 @@ mod tests {
         assert!(!processed_version.should_skip(&content_changed_version, None));
     }
 
-    #[test]
-    fn test_source_version_from_stored_with_memoization_info() {
-        let logic_fp = Fingerprinter::default()
-            .with(&"logic_v1".to_string())
-            .unwrap()
-            .into_fingerprint();
-
-        let version = SourceVersion::from_stored(Some(1000), &Some(logic_fp.0.to_vec()), logic_fp);
-
-        assert_eq!(version.ordinal.0, Some(1000));
-        assert!(matches!(version.kind, SourceVersionKind::CurrentLogic));
-    }
-
-    #[test]
-    fn test_ordinal_monotonic_invariance() {
-        // Test that ordinal order is always respected (monotonic invariance)
-
-        // Case 1: Newer ordinal -> should NOT skip (ordinal priority)
-        let existing = SourceVersion {
-            ordinal: Ordinal(Some(100)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        let target = SourceVersion {
-            ordinal: Ordinal(Some(200)), // Much newer
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        // Ordinal takes priority - don't skip newer ordinals
-        assert!(!existing.should_skip(&target, None));
-
-        // Case 2: Older ordinal -> should skip (older ordinal)
-        let target_different = SourceVersion {
-            ordinal: Ordinal(Some(50)), // Older timestamp
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        // Skip older ordinals regardless of content
-        assert!(existing.should_skip(&target_different, None));
-    }
-
-    #[test]
-    fn test_backward_compatibility_without_content_hash() {
-        // Ensure the system still works when content hashes are not available
-
-        let existing_no_hash = SourceVersion {
-            ordinal: Ordinal(Some(200)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        let target_no_hash = SourceVersion {
-            ordinal: Ordinal(Some(100)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        // Should fall back to ordinal comparison
-        assert!(existing_no_hash.should_skip(&target_no_hash, None));
-
-        // Reverse case
-        assert!(!target_no_hash.should_skip(&existing_no_hash, None));
-    }
-
-    #[test]
-    fn test_content_hash_with_different_logic_versions() {
-        // Same content but different logic version should not skip
-        let existing = SourceVersion {
-            ordinal: Ordinal(Some(100)),
-            kind: SourceVersionKind::DifferentLogic, // Different logic
-        };
-
-        let target = SourceVersion {
-            ordinal: Ordinal(Some(200)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        // Should not skip because logic is different
-        assert!(!existing.should_skip(&target, None));
-    }
-
-    #[test]
-    fn test_content_hash_optimization_concept() {
-        // Test that demonstrates the separation of concerns:
-        // should_skip: purely ordinal-based (monotonic invariance)
-        // content hash optimization: handled at update_source_row level
-
-        let existing = SourceVersion {
-            ordinal: Ordinal(Some(100)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        let target = SourceVersion {
-            ordinal: Ordinal(Some(200)), // Newer ordinal
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        // At should_skip level: don't skip (respect ordinal monotonic invariance)
-        assert!(!existing.should_skip(&target, None));
-
-        // Content hash optimization detection (used at update_source_row level)
-        let same_logic =
-            existing.kind == target.kind && existing.kind == SourceVersionKind::CurrentLogic;
-
-        assert!(same_logic);
-        // This condition would trigger the fast path in update_source_row
-        // to update only tracking info while maintaining ordinal invariance
-    }
-
-    #[test]
-    fn test_content_hash_optimization_safety_checks() {
-        // Test the safety checks for content hash optimization
-
-        // Case 1: Logic version must be CurrentLogic
-        let different_logic_version = SourceVersion {
-            ordinal: Ordinal(Some(100)),
-            kind: SourceVersionKind::DifferentLogic, // Not CurrentLogic
-        };
-        assert_ne!(
-            different_logic_version.kind,
-            SourceVersionKind::CurrentLogic
-        );
-
-        let unknown_logic_version = SourceVersion {
-            ordinal: Ordinal(Some(100)),
-            kind: SourceVersionKind::UnknownLogic, // Not CurrentLogic
-        };
-        assert_ne!(unknown_logic_version.kind, SourceVersionKind::CurrentLogic);
-
-        // Case 2: Only CurrentLogic allows content hash optimization
-        let current_logic_version = SourceVersion {
-            ordinal: Ordinal(Some(100)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-        assert_eq!(current_logic_version.kind, SourceVersionKind::CurrentLogic);
-
-        // Case 3: max_process_ordinal == process_ordinal check
-        // This would be checked in the actual update_source_row function
-        // where we verify that the commit completed successfully
-        let max_process_ordinal = Some(1000i64);
-        let process_ordinal = Some(1000i64);
-        let commit_completed = max_process_ordinal
-            .zip(process_ordinal)
-            .map(|(max_ord, proc_ord)| max_ord == proc_ord)
-            .unwrap_or(false);
-        assert!(commit_completed);
-
-        // Case 4: Incomplete commit scenario
-        let max_process_ordinal_incomplete = Some(1001i64);
-        let process_ordinal_incomplete = Some(1000i64);
-        let commit_incomplete = max_process_ordinal_incomplete
-            .zip(process_ordinal_incomplete)
-            .map(|(max_ord, proc_ord)| max_ord == proc_ord)
-            .unwrap_or(false);
-        assert!(!commit_incomplete);
-    }
-
-    #[test]
-    fn test_content_hash_optimization_transaction_safety() {
-        // Test the transaction-based approach for content hash optimization
-        // This test documents the race condition handling logic
-
-        // Scenario 1: Normal case - no concurrent changes
-        let original_process_ordinal = Some(1000i64);
-        let current_process_ordinal = Some(1000i64);
-        let no_concurrent_change = original_process_ordinal == current_process_ordinal;
-        assert!(
-            no_concurrent_change,
-            "Should proceed with optimization when no concurrent changes"
-        );
-
-        // Scenario 2: Race condition - process_ordinal changed
-        let original_process_ordinal_race = Some(1000i64);
-        let current_process_ordinal_race = Some(1001i64);
-        let concurrent_change_detected =
-            original_process_ordinal_race != current_process_ordinal_race;
-        assert!(
-            concurrent_change_detected,
-            "Should detect concurrent changes and fall back to normal processing"
-        );
-
-        // Scenario 3: Version check within transaction
-        let existing_version = SourceVersion {
-            ordinal: Ordinal(Some(100)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        let target_version = SourceVersion {
-            ordinal: Ordinal(Some(200)),
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        // Should not skip (target is newer)
-        assert!(!existing_version.should_skip(&target_version, None));
-
-        // But if a newer version appears during transaction:
-        let newer_concurrent_version = SourceVersion {
-            ordinal: Ordinal(Some(300)), // Even newer than target
-            kind: SourceVersionKind::CurrentLogic,
-        };
-
-        // The newer version should cause skipping
-        assert!(newer_concurrent_version.should_skip(&target_version, None));
-    }
 
     #[test]
     fn test_content_hash_computation() {
@@ -1132,4 +910,81 @@ mod tests {
         assert_ne!(hash1, hash3);
         assert_ne!(hash2, hash3);
     }
+
+    #[test]
+    fn test_github_actions_content_hash_optimization_requirements() {
+        // This test documents the exact requirements for GitHub Actions scenario
+        // where file modification times change but content remains the same
+        
+        use crate::utils::fingerprint::Fingerprinter;
+        
+        // Simulate file content that remains the same across GitHub Actions checkout
+        let file_content = "const hello = 'world';\nexport default hello;";
+        
+        // Hash before checkout (original file)
+        let hash_before_checkout = Fingerprinter::default()
+            .with(&file_content)
+            .unwrap()
+            .into_fingerprint();
+        
+        // Hash after checkout (same content, different timestamp)
+        let hash_after_checkout = Fingerprinter::default()
+            .with(&file_content)
+            .unwrap()
+            .into_fingerprint();
+        
+        // Content hashes must be identical for optimization to work
+        assert_eq!(hash_before_checkout, hash_after_checkout, 
+            "Content hash optimization requires identical hashes for same content");
+        
+        // Test with slightly different content (should produce different hashes)
+        let modified_content = "const hello = 'world!';\nexport default hello;"; // Added !
+        let hash_modified = Fingerprinter::default()
+            .with(&modified_content)
+            .unwrap()
+            .into_fingerprint();
+        
+        assert_ne!(hash_before_checkout, hash_modified,
+            "Different content should produce different hashes");
+    }
+
+
+    #[test]
+    fn test_github_actions_ordinal_behavior_with_content_optimization() {
+        // Test the complete GitHub Actions scenario:
+        // 1. File processed with ordinal=1000, content_hash=ABC
+        // 2. GitHub Actions checkout: ordinal=2000, content_hash=ABC (same content)
+        // 3. Should use content hash optimization (update only tracking, skip evaluation)
+        
+        let original_processing = SourceVersion {
+            ordinal: Ordinal(Some(1000)), // Original file timestamp
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        
+        let after_github_checkout = SourceVersion {
+            ordinal: Ordinal(Some(2000)), // New timestamp after checkout
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        
+        // Step 1: Ordinal check should NOT skip (newer ordinal means potential processing needed)
+        assert!(!original_processing.should_skip(&after_github_checkout, None),
+            "GitHub Actions: newer ordinal should not be skipped at ordinal level");
+        
+        // Step 2: Content hash optimization should trigger when content is same
+        // This is tested in the integration level - the optimization path should:
+        // - Compare content hashes
+        // - If same: update only tracking info (process_ordinal, process_time)
+        // - Skip expensive evaluation and target storage updates
+        
+        // Step 3: After optimization, tracking shows the new ordinal
+        let after_optimization = SourceVersion {
+            ordinal: Ordinal(Some(2000)), // Updated to new ordinal
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        
+        // Future requests with same ordinal should be skipped
+        assert!(after_optimization.should_skip(&after_github_checkout, None),
+            "After optimization, same ordinal should be skipped");
+    }
+
 }

@@ -311,7 +311,6 @@ pub async fn update_source_tracking_ordinal_and_logic(
     source_id: i32,
     source_key_json: &serde_json::Value,
     processed_source_ordinal: Option<i64>,
-    process_logic_fingerprint: &[u8],
     process_ordinal: i64,
     process_time_micros: i64,
     db_setup: &TrackingTableSetupState,
@@ -320,9 +319,8 @@ pub async fn update_source_tracking_ordinal_and_logic(
     let query_str = format!(
         "UPDATE {} SET \
          processed_source_ordinal = $3, \
-         process_logic_fingerprint = $4, \
-         process_ordinal = $5, \
-         process_time_micros = $6 \
+         process_ordinal = $4, \
+         process_time_micros = $5 \
          WHERE source_id = $1 AND source_key = $2",
         db_setup.table_name
     );
@@ -330,9 +328,8 @@ pub async fn update_source_tracking_ordinal_and_logic(
         .bind(source_id) // $1
         .bind(source_key_json) // $2
         .bind(processed_source_ordinal) // $3
-        .bind(process_logic_fingerprint) // $4
-        .bind(process_ordinal) // $5
-        .bind(process_time_micros) // $6
+        .bind(process_ordinal) // $4
+        .bind(process_time_micros) // $5
         .execute(db_executor)
         .await?;
     Ok(())
