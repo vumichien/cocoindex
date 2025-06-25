@@ -82,17 +82,16 @@ pub struct EvaluationMemory {
     cache: Option<Mutex<HashMap<Fingerprint, CacheEntry>>>,
     uuids: Mutex<HashMap<Fingerprint, UuidEntry>>,
     evaluation_only: bool,
-    content_hash: Option<Fingerprint>,
 }
 
 impl EvaluationMemory {
     pub fn new(
         current_time: chrono::DateTime<chrono::Utc>,
-        stored_info: Option<StoredMemoizationInfo>,
+        stored_info: Option<&StoredMemoizationInfo>,
         options: EvaluationMemoryOptions,
     ) -> Self {
         let (stored_cache, stored_uuids) = stored_info
-            .map(|stored_info| (stored_info.cache, stored_info.uuids))
+            .map(|stored_info| (&stored_info.cache, &stored_info.uuids))
             .unzip();
         Self {
             current_time,
@@ -100,14 +99,14 @@ impl EvaluationMemory {
                 Mutex::new(
                     stored_cache
                         .into_iter()
-                        .flat_map(|iter| iter.into_iter())
+                        .flat_map(|iter| iter.iter())
                         .map(|(k, e)| {
                             (
-                                k,
+                                *k,
                                 CacheEntry {
                                     time: chrono::DateTime::from_timestamp(e.time_sec, 0)
                                         .unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC),
-                                    data: CacheData::Previous(e.value),
+                                    data: CacheData::Previous(e.value.clone()),
                                 },
                             )
                         })
@@ -119,12 +118,11 @@ impl EvaluationMemory {
                     .then_some(stored_uuids)
                     .flatten()
                     .into_iter()
-                    .flat_map(|iter| iter.into_iter())
-                    .map(|(k, v)| (k, UuidEntry::new(v)))
+                    .flat_map(|iter| iter.iter())
+                    .map(|(k, v)| (*k, UuidEntry::new(v.clone())))
                     .collect(),
             ),
             evaluation_only: options.evaluation_only,
-            content_hash: None,
         }
     }
 
@@ -164,7 +162,7 @@ impl EvaluationMemory {
         Ok(StoredMemoizationInfo {
             cache,
             uuids,
-            content_hash: self.content_hash,
+            content_hash: None,
         })
     }
 
@@ -210,10 +208,6 @@ impl EvaluationMemory {
             }
         };
         Ok(Some(result))
-    }
-
-    pub fn set_content_hash(&mut self, content_hash: Fingerprint) {
-        self.content_hash = Some(content_hash);
     }
 
     pub fn next_uuid(&self, key: Fingerprint) -> Result<uuid::Uuid> {
