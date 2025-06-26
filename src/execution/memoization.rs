@@ -87,11 +87,11 @@ pub struct EvaluationMemory {
 impl EvaluationMemory {
     pub fn new(
         current_time: chrono::DateTime<chrono::Utc>,
-        stored_info: Option<&StoredMemoizationInfo>,
+        stored_info: Option<StoredMemoizationInfo>,
         options: EvaluationMemoryOptions,
     ) -> Self {
         let (stored_cache, stored_uuids) = stored_info
-            .map(|stored_info| (&stored_info.cache, &stored_info.uuids))
+            .map(|stored_info| (stored_info.cache, stored_info.uuids))
             .unzip();
         Self {
             current_time,
@@ -99,14 +99,14 @@ impl EvaluationMemory {
                 Mutex::new(
                     stored_cache
                         .into_iter()
-                        .flat_map(|iter| iter.iter())
+                        .flat_map(|iter| iter.into_iter())
                         .map(|(k, e)| {
                             (
-                                *k,
+                                k,
                                 CacheEntry {
                                     time: chrono::DateTime::from_timestamp(e.time_sec, 0)
                                         .unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC),
-                                    data: CacheData::Previous(e.value.clone()),
+                                    data: CacheData::Previous(e.value),
                                 },
                             )
                         })
@@ -118,8 +118,8 @@ impl EvaluationMemory {
                     .then_some(stored_uuids)
                     .flatten()
                     .into_iter()
-                    .flat_map(|iter| iter.iter())
-                    .map(|(k, v)| (*k, UuidEntry::new(v.clone())))
+                    .flat_map(|iter| iter.into_iter())
+                    .map(|(k, v)| (k, UuidEntry::new(v)))
                     .collect(),
             ),
             evaluation_only: options.evaluation_only,

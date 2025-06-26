@@ -499,39 +499,35 @@ async fn try_content_hash_optimization(
     src_eval_ctx: &SourceRowEvaluationContext<'_>,
     source_key_json: &serde_json::Value,
     source_version: &SourceVersion,
-    process_time: &chrono::DateTime<chrono::Utc>,
+    _process_time: &chrono::DateTime<chrono::Utc>,
     current_hash: &crate::utils::fingerprint::Fingerprint,
     tracking_info: &db_tracking::SourceTrackingInfoForProcessing,
     existing_version: &Option<SourceVersion>,
+    extracted_memoization_info: &Option<StoredMemoizationInfo>,
     update_stats: &stats::UpdateStats,
     pool: &PgPool,
 ) -> Result<Option<SkippedOr<()>>> {
     // Check if we can use content hash optimization
-    let can_use_optimization = existing_version
+    if !existing_version
         .as_ref()
-        .map(|v| v.kind == SourceVersionKind::CurrentLogic)
-        .unwrap_or(false)
-        && tracking_info
-            .max_process_ordinal
-            .zip(tracking_info.process_ordinal)
-            .map(|(max_ord, proc_ord)| max_ord == proc_ord)
-            .unwrap_or(false);
-
-    if !can_use_optimization {
+        .map_or(false, |v| v.kind == SourceVersionKind::CurrentLogic)
+    {
         return Ok(None);
     }
 
-    let existing_hash = tracking_info
-        .memoization_info
+    if !tracking_info
+        .max_process_ordinal
+        .zip(tracking_info.process_ordinal)
+        .map_or(false, |(max_ord, proc_ord)| max_ord == proc_ord)
+    {
+        return Ok(None);
+    }
+
+    let existing_hash = extracted_memoization_info
         .as_ref()
-        .and_then(|info| info.0.as_ref())
         .and_then(|stored_info| stored_info.content_hash.as_ref());
 
-    let Some(existing_hash) = existing_hash else {
-        return Ok(None);
-    };
-
-    if existing_hash != current_hash {
+    if existing_hash != Some(current_hash) {
         return Ok(None);
     }
 
@@ -546,41 +542,38 @@ async fn try_content_hash_optimization(
     )
     .await?;
 
-    if let Some(current_info) = current_tracking_info {
-        // Check 1: Same check as precommit - verify no newer version exists
-        let current_source_version = SourceVersion::from_stored_precommit_info(
-            &current_info,
-            src_eval_ctx.plan.logic_fingerprint,
-        );
-        if current_source_version.should_skip(source_version, Some(update_stats)) {
-            return Ok(Some(SkippedOr::Skipped(current_source_version)));
-        }
+    let Some(current_tracking_info) = current_tracking_info else {
+        return Ok(None);
+    };
 
-        // Check 2: Verify process_ordinal hasn't changed (no concurrent processing)
-        let original_process_ordinal = tracking_info.process_ordinal;
-        if current_info.process_ordinal == original_process_ordinal {
-            // Safe to apply optimization - just update tracking table
-            let new_process_ordinal =
-                (current_info.max_process_ordinal + 1).max(process_time.timestamp_millis());
-
-            db_tracking::update_source_tracking_ordinal_and_logic(
-                src_eval_ctx.import_op.source_id,
-                source_key_json,
-                source_version.ordinal.0,
-                new_process_ordinal,
-                process_time.timestamp_micros(),
-                &src_eval_ctx.plan.tracking_table_setup,
-                &mut *txn,
-            )
-            .await?;
-
-            txn.commit().await?;
-            update_stats.num_no_change.inc(1);
-            return Ok(Some(SkippedOr::Normal(())));
-        }
+    // Check 1: Same check as precommit - verify no newer version exists
+    let current_source_version = SourceVersion::from_stored_precommit_info(
+        &current_tracking_info,
+        src_eval_ctx.plan.logic_fingerprint,
+    );
+    if current_source_version.should_skip(source_version, Some(update_stats)) {
+        return Ok(Some(SkippedOr::Skipped(current_source_version)));
     }
 
-    Ok(None)
+    // Check 2: Verify process_ordinal hasn't changed (no concurrent processing)
+    let original_process_ordinal = tracking_info.process_ordinal;
+    if current_tracking_info.process_ordinal != original_process_ordinal {
+        return Ok(None);
+    }
+
+    // Safe to apply optimization - just update tracking table
+    db_tracking::update_source_tracking_ordinal_and_logic(
+        src_eval_ctx.import_op.source_id,
+        source_key_json,
+        source_version.ordinal.0,
+        &src_eval_ctx.plan.tracking_table_setup,
+        &mut *txn,
+    )
+    .await?;
+
+    txn.commit().await?;
+    update_stats.num_no_change.inc(1);
+    Ok(Some(SkippedOr::Normal(())))
 }
 
 pub async fn evaluate_source_entry_with_memory(
@@ -598,12 +591,12 @@ pub async fn evaluate_source_entry_with_memory(
         )
         .await?;
         existing_tracking_info
-            .and_then(|info| info.memoization_info.map(|info| info.0))
+            .and_then(|mut info| info.memoization_info.take().map(|info| info.0))
             .flatten()
     } else {
         None
     };
-    let memory = EvaluationMemory::new(chrono::Utc::now(), stored_info.as_ref(), options);
+    let memory = EvaluationMemory::new(chrono::Utc::now(), stored_info, options);
     let source_value = src_eval_ctx
         .import_op
         .executor
@@ -637,13 +630,20 @@ pub async fn update_source_row(
     let process_time = chrono::Utc::now();
 
     // Phase 1: Check existing tracking info and apply optimizations
-    let existing_tracking_info = read_source_tracking_info_for_processing(
+    let mut existing_tracking_info = read_source_tracking_info_for_processing(
         src_eval_ctx.import_op.source_id,
         &source_key_json,
         &src_eval_ctx.plan.tracking_table_setup,
         pool,
     )
     .await?;
+
+    // Extract memoization info
+    let extracted_memoization_info = existing_tracking_info
+        .as_mut()
+        .and_then(|info| info.memoization_info.take())
+        .and_then(|info| info.0);
+
     let existing_version = match &existing_tracking_info {
         Some(info) => {
             let existing_version = SourceVersion::from_stored_processing_info(
@@ -682,6 +682,7 @@ pub async fn update_source_row(
             current_hash,
             existing_tracking_info,
             &existing_version,
+            &extracted_memoization_info,
             update_stats,
             pool,
         )
@@ -693,14 +694,9 @@ pub async fn update_source_row(
 
     let (output, stored_mem_info) = match source_value {
         interface::SourceValue::Existence(source_value) => {
-            let memoization_info = existing_tracking_info
-                .as_ref()
-                .and_then(|info| info.memoization_info.as_ref())
-                .and_then(|info| info.0.as_ref());
-
             let evaluation_memory = EvaluationMemory::new(
                 process_time,
-                memoization_info,
+                extracted_memoization_info,
                 EvaluationMemoryOptions {
                     enable_cache: true,
                     evaluation_only: false,
