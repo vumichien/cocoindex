@@ -500,12 +500,37 @@ async fn try_content_hash_optimization(
     source_key_json: &serde_json::Value,
     source_version: &SourceVersion,
     process_time: &chrono::DateTime<chrono::Utc>,
-    existing_hash: &crate::utils::fingerprint::Fingerprint,
     current_hash: &crate::utils::fingerprint::Fingerprint,
-    original_tracking_info: &Option<db_tracking::SourceTrackingInfoForProcessing>,
+    tracking_info: &db_tracking::SourceTrackingInfoForProcessing,
+    existing_version: &Option<SourceVersion>,
     update_stats: &stats::UpdateStats,
     pool: &PgPool,
 ) -> Result<Option<SkippedOr<()>>> {
+    // Check if we can use content hash optimization
+    let can_use_optimization = existing_version
+        .as_ref()
+        .map(|v| v.kind == SourceVersionKind::CurrentLogic)
+        .unwrap_or(false)
+        && tracking_info
+            .max_process_ordinal
+            .zip(tracking_info.process_ordinal)
+            .map(|(max_ord, proc_ord)| max_ord == proc_ord)
+            .unwrap_or(false);
+
+    if !can_use_optimization {
+        return Ok(None);
+    }
+
+    let existing_hash = tracking_info
+        .memoization_info
+        .as_ref()
+        .and_then(|info| info.0.as_ref())
+        .and_then(|stored_info| stored_info.content_hash.as_ref());
+
+    let Some(existing_hash) = existing_hash else {
+        return Ok(None);
+    };
+
     if existing_hash != current_hash {
         return Ok(None);
     }
@@ -532,9 +557,7 @@ async fn try_content_hash_optimization(
         }
 
         // Check 2: Verify process_ordinal hasn't changed (no concurrent processing)
-        let original_process_ordinal = original_tracking_info
-            .as_ref()
-            .and_then(|info| info.process_ordinal);
+        let original_process_ordinal = tracking_info.process_ordinal;
         if current_info.process_ordinal == original_process_ordinal {
             // Safe to apply optimization - just update tracking table
             let new_process_ordinal =
@@ -621,38 +644,22 @@ pub async fn update_source_row(
         pool,
     )
     .await?;
-    let (existing_version, can_use_content_hash_optimization, existing_content_hash) =
-        match &existing_tracking_info {
-            Some(info) => {
-                let existing_version = SourceVersion::from_stored_processing_info(
-                    info,
-                    src_eval_ctx.plan.logic_fingerprint,
-                );
+    let existing_version = match &existing_tracking_info {
+        Some(info) => {
+            let existing_version = SourceVersion::from_stored_processing_info(
+                info,
+                src_eval_ctx.plan.logic_fingerprint,
+            );
 
-                // First check ordinal-based skipping
-                if existing_version.should_skip(source_version, Some(update_stats)) {
-                    return Ok(SkippedOr::Skipped(existing_version));
-                }
-
-                // Check if we can use content hash optimization
-                let can_use_optimization = existing_version.kind == SourceVersionKind::CurrentLogic
-                    && info
-                        .max_process_ordinal
-                        .zip(info.process_ordinal)
-                        .map(|(max_ord, proc_ord)| max_ord == proc_ord)
-                        .unwrap_or(false);
-
-                let content_hash = info
-                    .memoization_info
-                    .as_ref()
-                    .and_then(|info| info.0.as_ref())
-                    .and_then(|stored_info| stored_info.content_hash.as_ref())
-                    .cloned();
-
-                (Some(existing_version), can_use_optimization, content_hash)
+            // First check ordinal-based skipping
+            if existing_version.should_skip(source_version, Some(update_stats)) {
+                return Ok(SkippedOr::Skipped(existing_version));
             }
-            None => (None, false, None),
-        };
+
+            Some(existing_version)
+        }
+        None => None,
+    };
 
     // Compute content hash once if needed for both optimization and evaluation
     let current_content_hash = match &source_value {
@@ -664,25 +671,23 @@ pub async fn update_source_row(
         interface::SourceValue::NonExistence => None,
     };
 
-    if can_use_content_hash_optimization {
-        if let (Some(existing_hash), Some(current_hash)) =
-            (&existing_content_hash, &current_content_hash)
+    if let (Some(current_hash), Some(existing_tracking_info)) =
+        (&current_content_hash, &existing_tracking_info)
+    {
+        if let Some(optimization_result) = try_content_hash_optimization(
+            src_eval_ctx,
+            &source_key_json,
+            source_version,
+            &process_time,
+            current_hash,
+            existing_tracking_info,
+            &existing_version,
+            update_stats,
+            pool,
+        )
+        .await?
         {
-            if let Some(optimization_result) = try_content_hash_optimization(
-                src_eval_ctx,
-                &source_key_json,
-                source_version,
-                &process_time,
-                existing_hash,
-                current_hash,
-                &existing_tracking_info,
-                update_stats,
-                pool,
-            )
-            .await?
-            {
-                return Ok(optimization_result);
-            }
+            return Ok(optimization_result);
         }
     }
 

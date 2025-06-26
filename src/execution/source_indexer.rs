@@ -8,11 +8,11 @@ use tokio::{sync::Semaphore, task::JoinSet};
 use super::{
     db_tracking,
     evaluator::SourceRowEvaluationContext,
-    row_indexer::{self, SkippedOr, SourceVersion, SourceVersionKind},
+    row_indexer::{self, SkippedOr, SourceVersion},
     stats,
 };
 
-use crate::ops::interface::{self, Ordinal};
+use crate::ops::interface;
 struct SourceRowIndexingState {
     source_version: SourceVersion,
     processing_sem: Arc<Semaphore>,
@@ -64,19 +64,11 @@ impl SourceIndexingContext {
             rows.insert(
                 source_key,
                 SourceRowIndexingState {
-                    source_version: SourceVersion {
-                        ordinal: Ordinal(key_metadata.processed_source_ordinal),
-                        kind: match &key_metadata.process_logic_fingerprint {
-                            Some(stored_fp) => {
-                                if stored_fp.as_slice() == plan.logic_fingerprint.0.as_slice() {
-                                    SourceVersionKind::CurrentLogic
-                                } else {
-                                    SourceVersionKind::DifferentLogic
-                                }
-                            }
-                            None => SourceVersionKind::UnknownLogic,
-                        },
-                    },
+                    source_version: SourceVersion::from_stored(
+                        key_metadata.processed_source_ordinal,
+                        &key_metadata.process_logic_fingerprint,
+                        plan.logic_fingerprint,
+                    ),
                     processing_sem: Arc::new(Semaphore::new(1)),
                     touched_generation: scan_generation,
                 },
