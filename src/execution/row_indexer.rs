@@ -499,11 +499,9 @@ async fn try_content_hash_optimization(
     src_eval_ctx: &SourceRowEvaluationContext<'_>,
     source_key_json: &serde_json::Value,
     source_version: &SourceVersion,
-    _process_time: &chrono::DateTime<chrono::Utc>,
     current_hash: &crate::utils::fingerprint::Fingerprint,
     tracking_info: &db_tracking::SourceTrackingInfoForProcessing,
     existing_version: &Option<SourceVersion>,
-    extracted_memoization_info: &Option<StoredMemoizationInfo>,
     update_stats: &stats::UpdateStats,
     pool: &PgPool,
 ) -> Result<Option<SkippedOr<()>>> {
@@ -523,8 +521,10 @@ async fn try_content_hash_optimization(
         return Ok(None);
     }
 
-    let existing_hash = extracted_memoization_info
+    let existing_hash = tracking_info
+        .memoization_info
         .as_ref()
+        .and_then(|info| info.0.as_ref())
         .and_then(|stored_info| stored_info.content_hash.as_ref());
 
     if existing_hash != Some(current_hash) {
@@ -562,7 +562,7 @@ async fn try_content_hash_optimization(
     }
 
     // Safe to apply optimization - just update tracking table
-    db_tracking::update_source_tracking_ordinal_and_logic(
+    db_tracking::update_source_tracking_ordinal(
         src_eval_ctx.import_op.source_id,
         source_key_json,
         source_version.ordinal.0,
@@ -630,19 +630,13 @@ pub async fn update_source_row(
     let process_time = chrono::Utc::now();
 
     // Phase 1: Check existing tracking info and apply optimizations
-    let mut existing_tracking_info = read_source_tracking_info_for_processing(
+    let existing_tracking_info = read_source_tracking_info_for_processing(
         src_eval_ctx.import_op.source_id,
         &source_key_json,
         &src_eval_ctx.plan.tracking_table_setup,
         pool,
     )
     .await?;
-
-    // Extract memoization info
-    let extracted_memoization_info = existing_tracking_info
-        .as_mut()
-        .and_then(|info| info.memoization_info.take())
-        .and_then(|info| info.0);
 
     let existing_version = match &existing_tracking_info {
         Some(info) => {
@@ -678,11 +672,9 @@ pub async fn update_source_row(
             src_eval_ctx,
             &source_key_json,
             source_version,
-            &process_time,
             current_hash,
             existing_tracking_info,
             &existing_version,
-            &extracted_memoization_info,
             update_stats,
             pool,
         )
@@ -692,25 +684,31 @@ pub async fn update_source_row(
         }
     }
 
-    let (output, stored_mem_info) = match source_value {
-        interface::SourceValue::Existence(source_value) => {
-            let evaluation_memory = EvaluationMemory::new(
-                process_time,
-                extracted_memoization_info,
-                EvaluationMemoryOptions {
-                    enable_cache: true,
-                    evaluation_only: false,
-                },
-            );
+    let (output, stored_mem_info) = {
+        let extracted_memoization_info = existing_tracking_info
+            .and_then(|mut info| info.memoization_info.take())
+            .and_then(|info| info.0);
 
-            let output =
-                evaluate_source_entry(src_eval_ctx, source_value, &evaluation_memory).await?;
-            let mut stored_info = evaluation_memory.into_stored()?;
-            stored_info.content_hash = current_content_hash;
+        match source_value {
+            interface::SourceValue::Existence(source_value) => {
+                let evaluation_memory = EvaluationMemory::new(
+                    process_time,
+                    extracted_memoization_info,
+                    EvaluationMemoryOptions {
+                        enable_cache: true,
+                        evaluation_only: false,
+                    },
+                );
 
-            (Some(output), stored_info)
+                let output =
+                    evaluate_source_entry(src_eval_ctx, source_value, &evaluation_memory).await?;
+                let mut stored_info = evaluation_memory.into_stored()?;
+                stored_info.content_hash = current_content_hash;
+
+                (Some(output), stored_info)
+            }
+            interface::SourceValue::NonExistence => (None, Default::default()),
         }
-        interface::SourceValue::NonExistence => (None, Default::default()),
     };
 
     // Phase 2 (precommit): Update with the memoization info and stage target keys.

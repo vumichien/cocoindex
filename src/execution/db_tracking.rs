@@ -307,7 +307,7 @@ pub async fn read_source_last_processed_info(
     Ok(last_processed_info)
 }
 
-pub async fn update_source_tracking_ordinal_and_logic(
+pub async fn update_source_tracking_ordinal(
     source_id: i32,
     source_key_json: &serde_json::Value,
     processed_source_ordinal: Option<i64>,
