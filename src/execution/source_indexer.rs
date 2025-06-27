@@ -11,6 +11,8 @@ use super::{
     row_indexer::{self, SkippedOr, SourceVersion},
     stats,
 };
+
+use crate::ops::interface;
 struct SourceRowIndexingState {
     source_version: SourceVersion,
     processing_sem: Arc<Semaphore>,
@@ -245,7 +247,7 @@ impl SourceIndexingContext {
             for row in row? {
                 self.process_source_key_if_newer(
                     row.key,
-                    SourceVersion::from_current(
+                    SourceVersion::from_current_with_ordinal(
                         row.ordinal
                             .ok_or_else(|| anyhow::anyhow!("ordinal is not available"))?,
                     ),
