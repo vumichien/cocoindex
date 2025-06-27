@@ -591,7 +591,7 @@ pub async fn evaluate_source_entry_with_memory(
         )
         .await?;
         existing_tracking_info
-            .and_then(|mut info| info.memoization_info.take().map(|info| info.0))
+            .and_then(|info| info.memoization_info.map(|info| info.0))
             .flatten()
     } else {
         None
@@ -686,7 +686,7 @@ pub async fn update_source_row(
 
     let (output, stored_mem_info) = {
         let extracted_memoization_info = existing_tracking_info
-            .and_then(|mut info| info.memoization_info.take())
+            .and_then(|info| info.memoization_info)
             .and_then(|info| info.0);
 
         match source_value {
