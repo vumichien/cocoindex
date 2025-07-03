@@ -13,6 +13,7 @@ pub enum LlmApiType {
     LiteLlm,
     OpenRouter,
     Voyage,
+    Vllm,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +82,7 @@ mod litellm;
 mod ollama;
 mod openai;
 mod openrouter;
+mod vllm;
 mod voyage;
 
 pub async fn new_llm_generation_client(
@@ -108,6 +110,9 @@ pub async fn new_llm_generation_client(
         LlmApiType::Voyage => {
             api_bail!("Voyage is not supported for generation")
         }
+        LlmApiType::Vllm => {
+            Box::new(vllm::Client::new_vllm(address).await?) as Box<dyn LlmGenerationClient>
+        }
     };
     Ok(client)
 }
@@ -129,6 +134,7 @@ pub fn new_llm_embedding_client(
         LlmApiType::Ollama
         | LlmApiType::OpenRouter
         | LlmApiType::LiteLlm
+        | LlmApiType::Vllm
         | LlmApiType::Anthropic => {
             api_bail!("Embedding is not supported for API type {:?}", api_type)
         }

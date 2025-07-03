@@ -12,6 +12,7 @@ class LlmApiType(Enum):
     LITE_LLM = "LiteLlm"
     OPEN_ROUTER = "OpenRouter"
     VOYAGE = "Voyage"
+    VLLM = "Vllm"
 
 
 @dataclass

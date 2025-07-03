@@ -26,6 +26,7 @@ We support the following types of LLM APIs:
 | [Voyage](#voyage) | `LlmApiType.VOYAGE` | ❌ | ✅ |
 | [LiteLLM](#litellm) | `LlmApiType.LITE_LLM` | ✅ | ❌ |
 | [OpenRouter](#openrouter) | `LlmApiType.OPEN_ROUTER` | ✅ | ❌ |
+| [vLLM](#vllm) | `LlmApiType.VLLM` | ✅ | ❌ |
 
 ## LLM Tasks
 
@@ -307,3 +308,34 @@ cocoindex.LlmSpec(
 </Tabs>
 
 You can find the full list of models supported by OpenRouter [here](https://openrouter.ai/models).
+
+### vLLM 
+
+Install vLLM:
+
+```bash
+pip install vllm
+```
+
+Run vLLM Server
+
+```bash
+vllm serve deepseek-ai/deepseek-coder-1.3b-instruct
+```
+
+
+A spec for vLLM looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.VLLM,
+    model="deepseek-ai/deepseek-coder-1.3b-instruct",
+    address="http://127.0.0.1:8000/v1",
+)
+```
+
+</TabItem>
+</Tabs>
