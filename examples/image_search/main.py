@@ -15,6 +15,7 @@ from PIL import Image
 from qdrant_client import QdrantClient
 from transformers import CLIPModel, CLIPProcessor
 
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "ImageSearch"
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
@@ -69,12 +70,39 @@ def image_object_embedding_flow(
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
+        ollama_model_name = os.getenv("OLLAMA_MODEL")
+        if ollama_model_name is not None:
+            # If an Ollama model is specified, generate an image caption
+            img["caption"] = flow_builder.transform(
+                cocoindex.functions.ExtractByLlm(
+                    llm_spec=cocoindex.llm.LlmSpec(
+                        api_type=cocoindex.LlmApiType.OLLAMA, model=ollama_model_name
+                    ),
+                    instruction=(
+                        "Describe the image in one detailed sentence. "
+                        "Name all visible animal species, objects, and the main scene. "
+                        "Be specific about type, color, and notable features. "
+                        "Mention what each animal is doing."
+                    ),
+                    output_type=str,
+                ),
+                image=img["content"],
+            )
         img["embedding"] = img["content"].transform(embed_image)
-        img_embeddings.collect(
-            id=cocoindex.GeneratedField.UUID,
-            filename=img["filename"],
-            embedding=img["embedding"],
-        )
+
+        collect_fields = {
+            "id": cocoindex.GeneratedField.UUID,
+            "filename": img["filename"],
+            "embedding": img["embedding"],
+        }
+
+        if ollama_model_name is not None:
+            print(f"Using Ollama model '{ollama_model_name}' for captioning.")
+            collect_fields["caption"] = img["caption"]
+        else:
+            print(f"No Ollama model '{ollama_model_name}' found — skipping captioning.")
+
+        img_embeddings.collect(**collect_fields)
 
     img_embeddings.export(
         "img_embeddings",
@@ -126,11 +154,18 @@ def search(
         collection_name=QDRANT_COLLECTION,
         query_vector=("embedding", query_embedding),
         limit=limit,
+        with_payload=True,
     )
 
     return {
         "results": [
-            {"filename": result.payload["filename"], "score": result.score}
+            {
+                "filename": result.payload["filename"],
+                "score": result.score,
+                "caption": result.payload.get(
+                    "caption"
+                ),  # Include caption if available
+            }
             for result in search_results
         ]
     }
