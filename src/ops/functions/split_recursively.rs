@@ -1031,6 +1031,7 @@ pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::functions::test_utils::{build_arg_schema, test_flow_function};
 
     // Helper function to assert chunk text and its consistency with the range within the original text.
     fn assert_chunk_text_consistency(
@@ -1069,6 +1070,64 @@ mod tests {
             chunk_size,
             chunk_overlap,
             min_chunk_size,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_split_recursively() {
+        let spec = Spec {
+            custom_languages: vec![],
+        };
+        let factory = Arc::new(Factory);
+        let text_content = "Linea 1.\nLinea 2.\n\nLinea 3.";
+
+        let input_args_values = vec![
+            text_content.to_string().into(),
+            (15i64).into(),
+            (5i64).into(),
+            (0i64).into(),
+            Value::Null,
+        ];
+
+        let input_arg_schemas = vec![
+            build_arg_schema("text", BasicValueType::Str),
+            build_arg_schema("chunk_size", BasicValueType::Int64),
+            build_arg_schema("min_chunk_size", BasicValueType::Int64),
+            build_arg_schema("chunk_overlap", BasicValueType::Int64),
+            build_arg_schema("language", BasicValueType::Str),
+        ];
+
+        let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
+
+        assert!(
+            result.is_ok(),
+            "test_flow_function failed: {:?}",
+            result.err()
+        );
+        let value = result.unwrap();
+
+        match value {
+            Value::KTable(table) => {
+                let expected_chunks = vec![
+                    (RangeValue::new(0, 8), "Linea 1."),
+                    (RangeValue::new(9, 17), "Linea 2."),
+                    (RangeValue::new(19, 27), "Linea 3."),
+                ];
+
+                for (range, expected_text) in expected_chunks {
+                    let key: KeyValue = range.into();
+                    match table.get(&key) {
+                        Some(scope_value_ref) => {
+                            let chunk_text = scope_value_ref.0.fields[0]
+                                .as_str()
+                                .expect(&format!("Chunk text not a string for key {:?}", key));
+                            assert_eq!(**chunk_text, *expected_text);
+                        }
+                        None => panic!("Expected row value for key {:?}, not found", key),
+                    }
+                }
+            }
+            other => panic!("Expected Value::KTable, got {:?}", other),
         }
     }
 
@@ -1179,6 +1238,7 @@ mod tests {
         assert_chunk_text_consistency(text2, &chunks2[0], "A very very long", "Test 2, Chunk 0");
         assert!(chunks2[0].text.len() <= 20);
     }
+
     #[test]
     fn test_basic_split_with_overlap() {
         let text = "This is a test text that is a bit longer to see how the overlap works.";
@@ -1198,6 +1258,7 @@ mod tests {
             assert!(chunks[0].text.len() <= 25);
         }
     }
+
     #[test]
     fn test_split_trims_whitespace() {
         let text = "  \n First chunk. \n\n  Second chunk with spaces at the end.   \n";

@@ -102,3 +102,46 @@ impl SimpleFunctionFactoryBase for Factory {
         Ok(Box::new(Executor { args }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ops::functions::test_utils::{build_arg_schema, test_flow_function};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn test_parse_json() {
+        let spec = EmptySpec {};
+
+        let factory = Arc::new(Factory);
+        let json_string_content = r#"{"city": "Magdeburg"}"#;
+        let lang_value: Value = "json".to_string().into();
+
+        let input_args_values = vec![json_string_content.to_string().into(), lang_value.clone()];
+
+        let input_arg_schemas = vec![
+            build_arg_schema("text", BasicValueType::Str),
+            build_arg_schema("language", BasicValueType::Str),
+        ];
+
+        let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
+
+        assert!(
+            result.is_ok(),
+            "test_flow_function failed: {:?}",
+            result.err()
+        );
+        let value = result.unwrap();
+
+        match value {
+            Value::Basic(BasicValue::Json(arc_json_value)) => {
+                let expected_json = json!({"city": "Magdeburg"});
+                assert_eq!(
+                    *arc_json_value, expected_json,
+                    "Parsed JSON value mismatch with specified language"
+                );
+            }
+            _ => panic!("Expected Value::Basic(BasicValue::Json), got {:?}", value),
+        }
+    }
+}

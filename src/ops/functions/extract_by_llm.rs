@@ -155,3 +155,97 @@ impl SimpleFunctionFactoryBase for Factory {
         Ok(Box::new(Executor::new(spec, resolved_input_schema).await?))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ops::functions::test_utils::{build_arg_schema, test_flow_function};
+
+    #[tokio::test]
+    #[ignore = "This test requires an OpenAI API key or a configured local LLM and may make network calls."]
+    async fn test_extract_by_llm() {
+        // Define the expected output structure
+        let target_output_schema = StructSchema {
+            fields: Arc::new(vec![
+                FieldSchema::new(
+                    "extracted_field_name",
+                    make_output_type(BasicValueType::Str),
+                ),
+                FieldSchema::new(
+                    "extracted_field_value",
+                    make_output_type(BasicValueType::Int64),
+                ),
+            ]),
+            description: Some("A test structure for extraction".into()),
+        };
+
+        let output_type_spec = EnrichedValueType {
+            typ: ValueType::Struct(target_output_schema.clone()),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+
+        let spec = Spec {
+            llm_spec: LlmSpec {
+                api_type: crate::llm::LlmApiType::OpenAi,
+                model: "gpt-4o".to_string(),
+                address: None,
+            },
+            output_type: output_type_spec,
+            instruction: Some("Extract the name and value from the text. The name is a string, the value is an integer.".to_string()),
+        };
+
+        let factory = Arc::new(Factory);
+        let text_content = "The item is called 'CocoIndex Test' and its value is 42.";
+
+        let input_args_values = vec![text_content.to_string().into()];
+
+        let input_arg_schemas = vec![build_arg_schema("text", BasicValueType::Str)];
+
+        let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
+
+        if result.is_err() {
+            eprintln!(
+                "test_extract_by_llm: test_flow_function returned error (potentially expected for evaluate): {:?}",
+                result.as_ref().err()
+            );
+        }
+
+        assert!(
+            result.is_ok(),
+            "test_flow_function failed. NOTE: This test may require network access/API keys for OpenAI. Error: {:?}",
+            result.err()
+        );
+
+        let value = result.unwrap();
+
+        match value {
+            Value::Struct(field_values) => {
+                assert_eq!(
+                    field_values.fields.len(),
+                    target_output_schema.fields.len(),
+                    "Mismatched number of fields in output struct"
+                );
+                for (idx, field_schema) in target_output_schema.fields.iter().enumerate() {
+                    match (&field_values.fields[idx], &field_schema.value_type.typ) {
+                        (
+                            Value::Basic(BasicValue::Str(_)),
+                            ValueType::Basic(BasicValueType::Str),
+                        ) => {}
+                        (
+                            Value::Basic(BasicValue::Int64(_)),
+                            ValueType::Basic(BasicValueType::Int64),
+                        ) => {}
+                        (val, expected_type) => panic!(
+                            "Field '{}' type mismatch. Got {:?}, expected type compatible with {:?}",
+                            field_schema.name,
+                            val.kind(),
+                            expected_type
+                        ),
+                    }
+                }
+            }
+            _ => panic!("Expected Value::Struct, got {:?}", value),
+        }
+    }
+}
