@@ -86,14 +86,6 @@ def make_engine_value_decoder(
         or dst_annotation is inspect.Parameter.empty
         or dst_annotation is Any
     )
-    # Handle struct -> dict binding for explicit dict annotations
-    is_dict_annotation = False
-    if dst_annotation is dict:
-        is_dict_annotation = True
-    elif getattr(dst_annotation, "__origin__", None) is dict:
-        args = getattr(dst_annotation, "__args__", ())
-        if args == (str, Any):
-            is_dict_annotation = True
     if dst_is_any:
         if src_type_kind == "Union":
             return lambda value: value[1]
@@ -105,6 +97,15 @@ def make_engine_value_decoder(
                 f"It's required for {src_type_kind} type."
             )
         return lambda value: value
+        
+    # Handle struct -> dict binding for explicit dict annotations
+    is_dict_annotation = False
+    if dst_annotation is dict:
+        is_dict_annotation = True
+    elif getattr(dst_annotation, "__origin__", None) is dict:
+        args = getattr(dst_annotation, "__args__", ())
+        if args == (str, Any):
+            is_dict_annotation = True
     if is_dict_annotation and src_type_kind == "Struct":
         return _make_engine_struct_to_dict_decoder(field_path, src_type["fields"])
 
