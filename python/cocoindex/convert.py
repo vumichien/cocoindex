@@ -97,7 +97,7 @@ def make_engine_value_decoder(
                 f"It's required for {src_type_kind} type."
             )
         return lambda value: value
-        
+
     # Handle struct -> dict binding for explicit dict annotations
     is_dict_annotation = False
     if dst_annotation is dict:
