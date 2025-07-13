@@ -168,7 +168,8 @@ class AnalyzedTypeInfo:
 
 def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     """
-    Analyze a Python type and return the analyzed info.
+    Analyze a Python type annotation and extract CocoIndex-specific type information.
+    Only concrete CocoIndex type annotations are supported. Raises ValueError for Any, empty, or untyped dict types.
     """
     if isinstance(t, tuple) and len(t) == 2:
         kt, vt = t
@@ -242,7 +243,9 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     elif base_type is collections.abc.Mapping or base_type is dict:
         args = typing.get_args(t)
         if len(args) == 0:  # Handle untyped dict
-            elem_type = (str, Any)
+            raise ValueError(
+                "Untyped dict is not supported; please provide a concrete type, e.g., dict[str, Any]."
+            )
         else:
             elem_type = (args[0], args[1])
         kind = "KTable"
@@ -286,8 +289,9 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         elif t is datetime.timedelta:
             kind = "TimeDelta"
         elif t is dict:
-            elem_type = (str, Any)
-            kind = "KTable"
+            raise ValueError(
+                "Untyped dict is not supported; please provide a concrete type, e.g., dict[str, Any]."
+            )
         else:
             raise ValueError(f"type unsupported yet: {t}")
 
