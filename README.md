@@ -11,15 +11,35 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logoColor=white)](https://opensource.org/licenses/Apache-2.0)
 [![PyPI version](https://img.shields.io/pypi/v/cocoindex?color=5B5BD6)](https://pypi.org/project/cocoindex/)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/cocoindex)](https://pypistats.org/packages/cocoindex)
-
 [![CI](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml)
 [![release](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml)
 [![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
+
 </div>
+
+<div align="center">
+    <a href="https://trendshift.io/repositories/13939" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13939" alt="cocoindex-io%2Fcocoindex | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</div>
+
 
 Ultra performant data transformation framework for AI, with core engine written in Rust. Support incremental processing and data lineage out-of-box.  Exceptional developer velocity. Production-ready at day 0.
 
 ⭐ Drop a star to help us grow!
+
+<div align="center">
+    
+<!-- Keep these links. Translations will automatically update with the README. -->
+[Deutsch](https://readme-i18n.com/cocoindex-io/cocoindex?lang=de) | 
+[English](https://readme-i18n.com/cocoindex-io/cocoindex?lang=en) | 
+[Español](https://readme-i18n.com/cocoindex-io/cocoindex?lang=es) | 
+[français](https://readme-i18n.com/cocoindex-io/cocoindex?lang=fr) | 
+[日本語](https://readme-i18n.com/cocoindex-io/cocoindex?lang=ja) | 
+[한국어](https://readme-i18n.com/cocoindex-io/cocoindex?lang=ko) | 
+[Português](https://readme-i18n.com/cocoindex-io/cocoindex?lang=pt) | 
+[Русский](https://readme-i18n.com/cocoindex-io/cocoindex?lang=ru) | 
+[中文](https://readme-i18n.com/cocoindex-io/cocoindex?lang=zh)
+    
+</div>
 
 </br>
 
@@ -34,7 +54,7 @@ CocoIndex makes it super easy to transform data with AI workloads, and keep sour
 </br>
 
 <p align="center">
-    <img src="https://cocoindex.io/images/venn-features.png" alt="CocoIndex Features" width='480'>
+    <img src="https://cocoindex.io/images/venn-features.png" alt="CocoIndex Features" width='400'>
 </p>
 
 </br>
