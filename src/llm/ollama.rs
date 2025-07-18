@@ -1,11 +1,35 @@
 use crate::prelude::*;
 
-use super::LlmGenerationClient;
+use super::{LlmEmbeddingClient, LlmGenerationClient};
 use schemars::schema::SchemaObject;
 use serde_with::{base64::Base64, serde_as};
 
+fn get_embedding_dimension(model: &str) -> Option<u32> {
+    match model.to_ascii_lowercase().as_str() {
+        "mxbai-embed-large"
+        | "bge-m3"
+        | "bge-large"
+        | "snowflake-arctic-embed"
+        | "snowflake-arctic-embed2" => Some(1024),
+
+        "nomic-embed-text"
+        | "paraphrase-multilingual"
+        | "snowflake-arctic-embed:110m"
+        | "snowflake-arctic-embed:137m"
+        | "granite-embedding:278m" => Some(768),
+
+        "all-minilm"
+        | "snowflake-arctic-embed:22m"
+        | "snowflake-arctic-embed:33m"
+        | "granite-embedding" => Some(384),
+
+        _ => None,
+    }
+}
+
 pub struct Client {
     generate_url: String,
+    embed_url: String,
     reqwest_client: reqwest::Client,
 }
 
@@ -32,6 +56,17 @@ struct OllamaResponse {
     pub response: String,
 }
 
+#[derive(Debug, Serialize)]
+struct OllamaEmbeddingRequest<'a> {
+    pub model: &'a str,
+    pub input: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaEmbeddingResponse {
+    pub embedding: Vec<f32>,
+}
+
 const OLLAMA_DEFAULT_ADDRESS: &str = "http://localhost:11434";
 
 impl Client {
@@ -42,6 +77,7 @@ impl Client {
         };
         Ok(Self {
             generate_url: format!("{address}/api/generate"),
+            embed_url: format!("{address}/api/embed"),
             reqwest_client: reqwest::Client::new(),
         })
     }
@@ -95,5 +131,43 @@ impl LlmGenerationClient for Client {
             extract_descriptions: true,
             top_level_must_be_object: false,
         }
+    }
+}
+
+#[async_trait]
+impl LlmEmbeddingClient for Client {
+    async fn embed_text<'req>(
+        &self,
+        request: super::LlmEmbeddingRequest<'req>,
+    ) -> Result<super::LlmEmbeddingResponse> {
+        let req = OllamaEmbeddingRequest {
+            model: request.model,
+            input: request.text.as_ref(),
+        };
+        let resp = retryable::run(
+            || {
+                self.reqwest_client
+                    .post(self.embed_url.as_str())
+                    .json(&req)
+                    .send()
+            },
+            &retryable::HEAVY_LOADED_OPTIONS,
+        )
+        .await?;
+        if !resp.status().is_success() {
+            bail!(
+                "Ollama API error: {:?}\n{}\n",
+                resp.status(),
+                resp.text().await?
+            );
+        }
+        let embedding_resp: OllamaEmbeddingResponse = resp.json().await.context("Invalid JSON")?;
+        Ok(super::LlmEmbeddingResponse {
+            embedding: embedding_resp.embedding,
+        })
+    }
+
+    fn get_default_embedding_dimension(&self, model: &str) -> Option<u32> {
+        get_embedding_dimension(model)
     }
 }
