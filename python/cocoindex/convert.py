@@ -357,10 +357,13 @@ def _make_engine_ltable_to_list_dict_decoder(
         if values is None:
             return None
         result = []
-        for row_values in values:
+        for i, row_values in enumerate(values):
             decoded_row = row_decoder(row_values)
-            if decoded_row is not None:
-                result.append(decoded_row)
+            if decoded_row is None:
+                raise ValueError(
+                    f"LTable row at index {i} decoded to None, which is not allowed."
+                )
+            result.append(decoded_row)
         return result
 
     return decode_to_list_dict
@@ -393,18 +396,20 @@ def _make_engine_ktable_to_dict_dict_decoder(
             return None
         result = {}
         for row_values in values:
-            if len(row_values) < 2:
-                raise ValueError(
-                    f"KTable row must have at least 2 values (key + value), got {len(row_values)}"
-                )
+            if not row_values:
+                raise ValueError("KTable row must have at least 1 value (the key)")
             key = key_decoder(row_values[0])
-            value = value_decoder(row_values[1:])
-            # Handle case where key is a dict (from struct key) - convert to tuple
+            if len(row_values) == 1:
+                value: dict[str, Any] = {}
+            else:
+                tmp = value_decoder(row_values[1:])
+                if tmp is None:
+                    value = {}
+                else:
+                    value = tmp
             if isinstance(key, dict):
                 key = tuple(key.values())
-            # Skip None values to maintain type consistency
-            if value is not None:
-                result[key] = value
+            result[key] = value
         return result
 
     return decode_to_dict_dict
